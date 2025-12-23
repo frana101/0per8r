@@ -8,7 +8,10 @@
     "build": "electron-builder",
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
-    "build:all": "electron-builder --mac --win"
+    "build:all": "electron-builder --mac --win",
+    "publish:mac": "electron-builder --mac --publish always",
+    "publish:win": "electron-builder --win --publish always",
+    "publish:all": "electron-builder --mac --win --publish always"
   },
   "keywords": [
     "focus",
@@ -18,6 +21,7 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "@electron/notarize": "^3.1.1",
     "electron": "^28.0.0",
     "electron-builder": "^24.9.1",
     "electron-updater": "^6.6.2"
@@ -25,7 +29,6 @@
   "dependencies": {
     "active-win": "^7.7.2",
     "http-proxy": "^1.18.1",
-    "resend": "^6.6.0",
     "sudo-prompt": "^9.2.1"
   },
   "build": {
@@ -34,8 +37,8 @@
     "asar": true,
     "publish": {
       "provider": "github",
-      "owner": "YOUR_GITHUB_USERNAME",
-      "repo": "YOUR_REPO_NAME"
+      "owner": "frana101",
+      "repo": "0per8r"
     },
     "mac": {
       "category": "public.app-category.productivity",

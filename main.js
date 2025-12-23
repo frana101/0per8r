@@ -2374,7 +2374,38 @@ app.on('window-all-closed', () => {
 app.on('before-quit', (event) => {
   // If focus mode is active, restore blocking IMMEDIATELY before quitting
   if (isLocked) {
-    event.preventDefault(); // Prevent quit until restore completes
+    // On Windows, don't prevent quit - just restore in background
+    if (process.platform === 'win32') {
+      // Windows: Don't prevent quit, just restore immediately
+      isLocked = false;
+      if (appMonitorInterval) {
+        clearInterval(appMonitorInterval);
+        appMonitorInterval = null;
+      }
+      removeWebRequestBlocking();
+      
+      // Stop servers
+      if (blockingProxyServer) {
+        blockingProxyServer.close();
+        blockingProxyServer = null;
+      }
+      if (pacServer) {
+        pacServer.close();
+        pacServer = null;
+      }
+      
+      // Restore in background (don't wait)
+      restoreCombinedBlocking();
+      restoreHostsFile();
+      restoreDoH();
+      
+      isQuitting = true;
+      // Allow quit immediately on Windows
+      return;
+    }
+    
+    // macOS: Can prevent quit and wait
+    event.preventDefault();
     safeLog('⚠️ App quitting during focus mode - restoring blocking IMMEDIATELY...');
     
     // Stop monitoring first
