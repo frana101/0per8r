@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>0per8r</title>
+  <!-- Google Fonts - allowed even when blocking is active -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&family=Orbitron:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Fallback to ensure content is visible */
+    body {
+      background-color: #0a0a0f !important;
+      color: #ffffff !important;
+    }
+  </style>
+</head>
+<body>
+  <!-- Login/Signup -->
+  <div id="auth" class="phase active">
+    <div class="auth-container">
+      <div class="auth-box">
+        <div class="auth-header">
+          <h1 class="auth-title">0PER8R</h1>
+          <p class="auth-subtitle">Focus Operating System</p>
+        </div>
+        
+        <div class="auth-tabs">
+          <button type="button" id="login-tab" class="auth-tab active" onclick="switchAuthTab('login')">Log In</button>
+          <button type="button" id="signup-tab" class="auth-tab" onclick="switchAuthTab('signup')">Sign Up</button>
+        </div>
+        
+        <!-- Login Form -->
+        <div id="login-form" class="auth-form active">
+          <div class="auth-input-group">
+            <label class="auth-label">Email or Username</label>
+            <input type="text" id="login-username" class="auth-input" placeholder="Enter your email or username" autocomplete="username" />
+          </div>
+          <div class="auth-input-group">
+            <label class="auth-label">Password</label>
+            <input type="password" id="login-password" class="auth-input" placeholder="Enter your password" autocomplete="current-password" onkeydown="if(event.key==='Enter') handleLogin()" />
+          </div>
+          <button type="button" id="login-btn" class="auth-btn" onclick="handleLogin()">Log In</button>
+          <div id="auth-error" class="auth-error"></div>
+        </div>
+        
+        <!-- Signup Form -->
+        <div id="signup-form" class="auth-form">
+          <div class="auth-input-group">
+            <label class="auth-label">Email</label>
+            <input type="email" id="signup-email" class="auth-input" placeholder="Enter your email" autocomplete="email" />
+          </div>
+          <div class="auth-input-group">
+            <label class="auth-label">Username</label>
+            <input type="text" id="signup-username" class="auth-input" placeholder="Choose a username" autocomplete="username" />
+          </div>
+          <div class="auth-input-group">
+            <label class="auth-label">Password</label>
+            <input type="password" id="signup-password" class="auth-input" placeholder="Create a password" autocomplete="new-password" />
+          </div>
+          <div class="auth-input-group">
+            <label class="auth-label">Confirm Password</label>
+            <input type="password" id="signup-confirm" class="auth-input" placeholder="Confirm your password" autocomplete="new-password" onkeydown="if(event.key==='Enter') handleSignup()" />
+          </div>
+          <button type="button" id="signup-btn" class="auth-btn" onclick="handleSignup()">Sign Up</button>
+          <div id="signup-error" class="auth-error"></div>
+        </div>
+        
+        <!-- Email Verification Form (hidden by default) -->
+        <div id="verify-email-form" class="auth-form" style="display: none;">
+          <div class="auth-input-group">
+            <label class="auth-label">Verification Code</label>
+            <input type="text" id="verify-code" class="auth-input" placeholder="Enter verification code from email" autocomplete="one-time-code" maxlength="6" />
+          </div>
+          <button type="button" id="verify-btn" class="auth-btn" onclick="handleVerifyEmail()">Verify Email</button>
+          <button type="button" id="resend-btn" class="auth-btn" style="margin-top: 10px; background: transparent; border: 1px solid #fff;" onclick="handleResendCode()">Resend Code</button>
+          <div id="verify-error" class="auth-error"></div>
+        </div>
+        
+        <div class="auth-footer">
+          <p class="auth-note">Email verification required for account security.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" class="phase">
+    <div class="dashboard-wrapper">
+      <!-- App Title -->
+      <div class="app-title-container">
+        <h1 class="app-title">0PER8R</h1>
+      </div>
+      
+      <!-- 3 Columns Side by Side -->
+      <div class="dashboard-columns">
+        <!-- Column 1: Restrictions -->
+        <div class="bento-box restrictions-box">
+          <div class="box-header">
+            <h2 class="box-title">Restrictions</h2>
+          </div>
+          <div class="box-content">
+            <label class="env-label">Allowed Websites</label>
+            <div class="tag-input-container">
+              <input type="text" id="allow-sites-input" class="tag-input" placeholder="e.g., docs.google.com (Enter)" />
+              <div id="allow-sites-tags" class="tag-list"></div>
+            </div>
+            <div class="env-note">google.com is always allowed. All other websites will be blocked.</div>
+            
+            <label class="env-label" style="margin-top: 16px;">Allowed Apps</label>
+            <div class="tag-input-container">
+              <input type="text" id="allow-apps-input" class="tag-input" placeholder="e.g., VS Code (Enter)" />
+              <div id="allow-apps-tags" class="tag-list"></div>
+            </div>
+            <div class="env-note">All other apps will be blocked</div>
+          </div>
+        </div>
+
+        <!-- Column 2: THE TASK and Start Focus Session -->
+        <div class="middle-column">
+          <!-- THE TASK Box -->
+          <div class="bento-box task-box">
+            <div class="box-header">
+              <h2 class="box-title">THE TASK</h2>
+            </div>
+            <div class="box-content">
+              <!-- Mission -->
+              <div class="hierarchy-section">
+                <label class="hierarchy-label">Long Term Mission</label>
+                <textarea id="mission-input" class="hierarchy-input" placeholder="Your clearly defined mission" rows="2"></textarea>
+              </div>
+              
+              <!-- Current Goal -->
+              <div class="hierarchy-section">
+                <label class="hierarchy-label">Current Goal</label>
+                <textarea id="goal-input" class="hierarchy-input" placeholder="Your current goal milestone" rows="2"></textarea>
+              </div>
+              
+              <!-- Needle-Mover -->
+              <div class="hierarchy-section">
+                <label class="hierarchy-label">Needle-Mover</label>
+                <textarea id="task-input" class="hierarchy-input" placeholder="Today's high-value task" rows="2"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- Start Focus Session Box -->
+          <div class="bento-box session-start-box">
+            <div class="box-header">
+              <h2 class="box-title">Start Focus Session</h2>
+            </div>
+            <div class="box-content">
+              <div class="session-start-controls">
+                <div class="session-control-group">
+                  <label class="session-control-label">Duration</label>
+                  <select id="duration-select" class="session-select">
+                    <option value="25">25 min</option>
+                    <option value="45">45 min</option>
+                    <option value="60">60 min</option>
+                    <option value="90">90 min</option>
+                    <option value="120">120 min</option>
+                  </select>
+                </div>
+                
+                <div class="session-control-group">
+                  <label class="session-control-label">Needle-Mover</label>
+                  <select id="mit-select" class="session-select">
+                    <option value="0">Select needle-mover...</option>
+                  </select>
+                </div>
+                
+                <button id="start-session" class="session-start-btn"><span>Begin Execution</span></button>
+                
+                <div class="session-streak-display">
+                  <span class="session-streak-label">Execution Streak</span>
+                  <span id="streak-count" class="session-streak-value">0</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Column 3: Soundscapes -->
+        <div class="bento-box soundscapes-box">
+          <div class="box-header">
+            <h2 class="box-title">Soundscapes</h2>
+          </div>
+          <div class="box-content">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+              <label class="env-label" style="margin: 0;">On/Off</label>
+              <button id="soundscape-toggle" class="soundscape-toggle" style="padding: 6px 16px; background: #000; border: 2px solid #fff; color: #fff; cursor: pointer; font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">ON</button>
+            </div>
+            <div id="soundscape-mixer" class="soundscape-mixer">
+              <div class="sound-item" data-sound="rain">
+                <div class="sound-icon">🌧️</div>
+                <div class="sound-name">Rain</div>
+                <input type="range" class="sound-slider" min="0" max="100" value="0" />
+                <span class="sound-value">0%</span>
+              </div>
+              <div class="sound-item" data-sound="ocean">
+                <div class="sound-icon">🌊</div>
+                <div class="sound-name">Ocean</div>
+                <input type="range" class="sound-slider" min="0" max="100" value="0" />
+                <span class="sound-value">0%</span>
+              </div>
+              <div class="sound-item" data-sound="fire">
+                <div class="sound-icon">🔥</div>
+                <div class="sound-name">Fire</div>
+                <input type="range" class="sound-slider" min="0" max="100" value="0" />
+                <span class="sound-value">0%</span>
+              </div>
+              <div class="sound-item" data-sound="wind">
+                <div class="sound-icon">💨</div>
+                <div class="sound-name">Wind</div>
+                <input type="range" class="sound-slider" min="0" max="100" value="0" />
+                <span class="sound-value">0%</span>
+              </div>
+              <div class="sound-item" data-sound="forest">
+                <div class="sound-icon">🌲</div>
+                <div class="sound-name">Forest</div>
+                <input type="range" class="sound-slider" min="0" max="100" value="0" />
+                <span class="sound-value">0%</span>
+              </div>
+              <div class="sound-item" data-sound="cafe">
+                <div class="sound-icon">☕</div>
+                <div class="sound-name">Cafe</div>
+                <input type="range" class="sound-slider" min="0" max="100" value="0" />
+                <span class="sound-value">0%</span>
+              </div>
+              <div class="sound-item" data-sound="cityscape">
+                <div class="sound-icon">🏙️</div>
+                <div class="sound-name">Cityscape</div>
+                <input type="range" class="sound-slider" min="0" max="100" value="0" />
+                <span class="sound-value">0%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Focus Session -->
+  <div id="focus-session" class="phase">
+    <div class="session-container">
+      <div class="session-header">
+        <div class="session-info">
+          <div class="session-task">MIT: <span id="session-mit"></span></div>
+          <div class="session-timer" id="session-timer">00:00</div>
+        </div>
+        <button id="emergency-exit" class="emergency-btn">Emergency Exit</button>
+      </div>
+      
+      <div class="session-body">
+        <!-- Soundscape Controls -->
+        <div class="soundscape-panel">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h3 class="panel-title" style="margin-bottom: 0;">Soundscape Mixer</h3>
+            <button id="session-soundscape-toggle" class="soundscape-toggle" style="padding: 6px 16px; background: #000; border: 2px solid #fff; color: #fff; cursor: pointer; font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">ON</button>
+          </div>
+          <div id="session-soundscape" class="session-soundscape"></div>
+        </div>
+        
+        <!-- Allowed Apps & Websites -->
+        <div class="allowed-panel">
+          <h3 class="panel-title">Allowed Access</h3>
+          <div class="allowed-content">
+            <div class="allowed-section">
+              <div class="allowed-label">Apps</div>
+              <div id="session-allowed-apps" class="allowed-list"></div>
+            </div>
+            <div class="allowed-section">
+              <div class="allowed-label">Websites</div>
+              <div id="session-allowed-sites" class="allowed-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Completion -->
+  <div id="completion" class="phase">
+    <div class="completion-container">
+      <h1 class="completion-title">✅ Session Complete</h1>
+      <div class="completion-content">
+        <div class="completion-question">
+          <label>Task Completed?</label>
+          <div class="completion-options">
+            <button class="option-btn" data-result="yes">Yes</button>
+            <button class="option-btn" data-result="partial">Partial</button>
+            <button class="option-btn" data-result="no">No</button>
+          </div>
+        </div>
+        <button id="complete-finish" class="finish-btn"><span>Return to Dashboard</span></button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Immediate check to see if script loads
+    console.log('HTML loaded, waiting for app.js...');
+    window.addEventListener('error', function(e) {
+      console.error('Global error:', e.error, e.filename, e.lineno);
+      document.body.innerHTML = '<div style="padding: 20px; color: white; font-family: monospace;"><h1>JavaScript Error</h1><p>' + e.message + '</p><pre>' + e.stack + '</pre></div>';
+    });
+  </script>
+  <script src="app.js"></script>
+  <script>
+    console.log('app.js script tag executed');
+  </script>
+</body>
+</html>

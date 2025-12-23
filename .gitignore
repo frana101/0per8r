@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+*.dmg
+*.exe
+*.blockmap
+*.yml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temporary files
+*.tmp
+*.temp
+hosts.backup
+hosts.temp
+*.sh
+focusos_proxy.pac
+restore_blocking.sh
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.local
