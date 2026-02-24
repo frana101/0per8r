@@ -80,7 +80,7 @@
         </div>
         
         <div class="auth-footer">
-          <p class="auth-note">Email verification required for account security.</p>
+          <p class="auth-note">Create an account with a valid email. No verification needed—sign in anytime.</p>
         </div>
       </div>
     </div>
@@ -90,8 +90,12 @@
   <div id="dashboard" class="phase">
     <div class="dashboard-wrapper">
       <!-- App Title -->
-      <div class="app-title-container">
+      <div class="app-title-container" style="display: flex; justify-content: center; align-items: center; position: relative;">
         <h1 class="app-title">0PER8R</h1>
+        <div style="position: absolute; right: 0; display: flex; gap: 8px;">
+          <button id="uninstall-btn" class="logout-btn" onclick="handleUninstall()" style="display: none; padding: 8px 16px; background: transparent; border: 1px solid #666; color: #fff; cursor: pointer; font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">Uninstall</button>
+          <button id="logout-btn" class="logout-btn" onclick="handleLogout()" style="padding: 8px 16px; background: transparent; border: 1px solid #666; color: #fff; cursor: pointer; font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">Logout</button>
+        </div>
       </div>
       
       <!-- 3 Columns Side by Side -->
@@ -107,7 +111,11 @@
               <input type="text" id="allow-sites-input" class="tag-input" placeholder="e.g., docs.google.com (Enter)" />
               <div id="allow-sites-tags" class="tag-list"></div>
             </div>
-            <div class="env-note">google.com is always allowed. All other websites will be blocked.</div>
+            <div style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+              <input type="checkbox" id="google-always-allowed-toggle" checked style="cursor: pointer;" />
+              <label for="google-always-allowed-toggle" style="font-size: 11px; color: #aaa; cursor: pointer; user-select: none;">Always allow google.com</label>
+            </div>
+            <div id="google-note" class="env-note">google.com is always allowed. All other websites will be blocked.</div>
             
             <label class="env-label" style="margin-top: 16px;">Allowed Apps</label>
             <div class="tag-input-container">
@@ -154,14 +162,8 @@
             <div class="box-content">
               <div class="session-start-controls">
                 <div class="session-control-group">
-                  <label class="session-control-label">Duration</label>
-                  <select id="duration-select" class="session-select">
-                    <option value="25">25 min</option>
-                    <option value="45">45 min</option>
-                    <option value="60">60 min</option>
-                    <option value="90">90 min</option>
-                    <option value="120">120 min</option>
-                  </select>
+                  <label class="session-control-label">Duration (minutes)</label>
+                  <input type="number" id="duration-input" class="session-select" min="1" max="999" value="25" placeholder="Enter duration" />
                 </div>
                 
                 <div class="session-control-group">
@@ -171,7 +173,7 @@
                   </select>
                 </div>
                 
-                <button id="start-session" class="session-start-btn"><span>Begin Execution</span></button>
+                <button id="start-session" class="session-start-btn"><span>Enter the Execution Chamber</span></button>
                 
                 <div class="session-streak-display">
                   <span class="session-streak-label">Execution Streak</span>
@@ -250,6 +252,7 @@
           <div class="session-task">MIT: <span id="session-mit"></span></div>
           <div class="session-timer" id="session-timer">00:00</div>
         </div>
+        <div class="execution-chamber-title">The Execution Chamber</div>
         <button id="emergency-exit" class="emergency-btn">Emergency Exit</button>
       </div>
       
@@ -307,6 +310,19 @@
       document.body.innerHTML = '<div style="padding: 20px; color: white; font-family: monospace;"><h1>JavaScript Error</h1><p>' + e.message + '</p><pre>' + e.stack + '</pre></div>';
     });
   </script>
+  <!-- Password Modal -->
+  <div id="password-modal" class="password-modal" style="display: none;">
+    <div class="password-modal-content">
+      <h2 class="password-modal-title">Enter Password</h2>
+      <p class="password-modal-message" id="password-modal-message"></p>
+      <input type="password" id="password-input" class="password-input" placeholder="Enter your password" autocomplete="current-password" />
+      <div class="password-modal-buttons">
+        <button id="password-modal-cancel" class="password-modal-btn password-modal-btn-cancel">Cancel</button>
+        <button id="password-modal-confirm" class="password-modal-btn password-modal-btn-confirm">Confirm</button>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
   <script>
     console.log('app.js script tag executed');

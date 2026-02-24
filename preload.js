@@ -34,5 +34,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onUpdateProgress: (callback) => {
     ipcRenderer.on('update-progress', (event, data) => callback(data));
-  }
+  },
+  // Quit password verification
+  onRequestQuitPassword: (callback) => {
+    ipcRenderer.on('request-quit-password', (event, data) => callback(event, data));
+  },
+  verifyQuitPassword: (verified) => {
+    ipcRenderer.send('quit-password-verified', verified);
+  },
+  // Windows uninstaller
+  openUninstaller: () => ipcRenderer.invoke('open-uninstaller'),
+  getPlatform: () => process.platform
 });

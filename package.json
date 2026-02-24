@@ -1,11 +1,12 @@
 {
   "name": "0per8r",
-  "version": "1.0.0",
+  "version": "1.2.9",
   "description": "0per8r - Execution Lock System",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
+    "vercel-build": "mkdir -p public && echo '<!DOCTYPE html><html><body><p>0per8r API</p></body></html>' > public/index.html",
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
     "build:all": "electron-builder --mac --win",
@@ -22,12 +23,14 @@
   "license": "MIT",
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
+    "@supabase/supabase-js": "^2.97.0",
+    "bcryptjs": "^3.0.3",
     "electron": "^28.0.0",
-    "electron-builder": "^24.9.1",
-    "electron-updater": "^6.6.2"
+    "electron-builder": "^24.9.1"
   },
   "dependencies": {
     "active-win": "^7.7.2",
+    "electron-updater": "^6.6.2",
     "http-proxy": "^1.18.1",
     "sudo-prompt": "^9.2.1"
   },
@@ -35,13 +38,16 @@
     "appId": "com.0per8r.app",
     "productName": "0per8r",
     "asar": true,
+    "icon": "build/icon.png",
     "publish": {
       "provider": "github",
       "owner": "frana101",
-      "repo": "0per8r"
+      "repo": "0per8r",
+      "releaseType": "release"
     },
     "mac": {
       "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
       "target": [
         {
           "target": "dmg",
@@ -55,6 +61,7 @@
       "hardenedRuntime": false
     },
     "win": {
+      "icon": "build/icon.png",
       "target": [
         {
           "target": "nsis",
@@ -63,7 +70,9 @@
             "ia32"
           ]
         }
-      ]
+      ],
+      "signingHashAlgorithms": [],
+      "signDlls": false
     },
     "nsis": {
       "oneClick": false,

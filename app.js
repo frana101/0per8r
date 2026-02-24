@@ -5,6 +5,7 @@ const state = {
   task: '', // Single needle-mover task
   allowSites: [],
   allowApps: [],
+  googleAlwaysAllowed: true, // Toggle for google.com always allowed
   soundscape: {
     rain: 0,
     ocean: 0,
@@ -66,7 +67,7 @@ const SOUND_URLS = {
   }
 })();
 
-function initApp() {
+async function initApp() {
   console.log('Initializing app...');
   console.log('Document ready state:', document.readyState);
   console.log('Body exists:', !!document.body);
@@ -78,8 +79,8 @@ function initApp() {
   }
   
   try {
-    // Check authentication first
-    checkAuthentication();
+    const isAuth = checkAuthentication();
+    console.log('Authentication check result:', isAuth, 'state.isAuthenticated:', state.isAuthenticated);
     
     if (!state.isAuthenticated) {
       // Show auth page
@@ -91,7 +92,10 @@ function initApp() {
     }
     
     // User is authenticated, proceed with normal initialization
-    loadState();
+    console.log('User is authenticated, loading dashboard for:', state.currentUser);
+    showPhase('dashboard'); // IMPORTANT: Show dashboard when authenticated
+    
+    await loadState();
     console.log('✓ State loaded');
     
     initializeEventListeners();
@@ -175,48 +179,104 @@ async function preloadSounds() {
   // HTML5 Audio loads automatically when needed
 }
 
-// Load state
-function loadState() {
+// Load state - sync from localStorage, optionally fetch from API if backend session exists
+async function loadState() {
   try {
-    const saved = JSON.parse(localStorage.getItem('focusOS_state') || '{}');
-    state.mission = saved.mission || '';
-    state.goal = saved.goal || '';
-    // Migrate old format
+    const token = localStorage.getItem('0per8r_sessionToken');
+    if (token) {
+      try {
+        const res = await fetch(`${API_BASE}/api/user?token=${encodeURIComponent(token)}`);
+        if (res.ok) {
+          const data = await res.json();
+          const prefs = (data.user && data.user.preferences) || {};
+          if (prefs.mission !== undefined) state.mission = prefs.mission;
+          if (prefs.goal !== undefined) state.goal = prefs.goal;
+          if (prefs.task !== undefined) state.task = prefs.task;
+          if (prefs.allowSites) state.allowSites = prefs.allowSites;
+          if (prefs.allowApps) state.allowApps = prefs.allowApps;
+          if (prefs.googleAlwaysAllowed !== undefined) state.googleAlwaysAllowed = prefs.googleAlwaysAllowed;
+          if (prefs.soundscape) state.soundscape = { ...state.soundscape, ...prefs.soundscape };
+          if (prefs.soundscapeEnabled !== undefined) state.soundscapeEnabled = prefs.soundscapeEnabled;
+          if (prefs.streak !== undefined) state.streak = prefs.streak;
+          applyLoadedState();
+          return;
+        }
+      } catch (e) {
+        console.warn('API load failed, using local:', e.message);
+      }
+    }
+    loadStateFromLocal();
+  } catch (e) {
+    console.error('Load state error:', e);
+    loadStateFromLocal();
+  }
+}
+
+function loadStateFromLocal() {
+  const longTermData = JSON.parse(localStorage.getItem('0per8r_longterm') || '{}');
+  if (longTermData.mission) state.mission = longTermData.mission;
+  if (longTermData.goal) state.goal = longTermData.goal;
+  if (longTermData.needleMover) state.task = longTermData.needleMover;
+  const saved = JSON.parse(localStorage.getItem('focusOS_state') || '{}');
+  if (!longTermData.mission) state.mission = saved.mission || '';
+  if (!longTermData.goal) state.goal = saved.goal || '';
+  if (!longTermData.needleMover) {
     if (saved.tasks && saved.tasks.length > 0) {
       const firstTask = typeof saved.tasks[0] === 'string' ? saved.tasks[0] : (saved.tasks[0].text || '');
       state.task = firstTask;
     } else {
       state.task = saved.task || '';
     }
-    state.allowSites = saved.allowSites || [];
-    state.allowApps = saved.allowApps || [];
-    // Load soundscape but filter out any invalid keys (like whiteNoise from old versions)
+  }
+  state.allowSites = saved.allowSites || [];
+  state.allowApps = saved.allowApps || [];
+  state.googleAlwaysAllowed = saved.googleAlwaysAllowed !== undefined ? saved.googleAlwaysAllowed : true;
   const allowedSounds = ['rain', 'ocean', 'fire', 'wind', 'forest', 'cafe', 'cityscape'];
   if (saved.soundscape) {
     state.soundscape = {};
-    allowedSounds.forEach(sound => {
-      state.soundscape[sound] = saved.soundscape[sound] || 0;
-    });
+    allowedSounds.forEach(sound => { state.soundscape[sound] = saved.soundscape[sound] || 0; });
   }
   state.soundscapeEnabled = saved.soundscapeEnabled !== undefined ? saved.soundscapeEnabled : true;
-    state.streak = saved.streak || 0;
-  } catch (e) {
-    console.error('Load state error:', e);
-  }
+  state.streak = saved.streak || 0;
+  applyLoadedState();
 }
 
-// Save state
+function applyLoadedState() {
+  // Ensure soundscape has all keys
+  const allowedSounds = ['rain', 'ocean', 'fire', 'wind', 'forest', 'cafe', 'cityscape'];
+  allowedSounds.forEach(s => { if (state.soundscape[s] === undefined) state.soundscape[s] = 0; });
+}
+
+let saveToServerTimeout = null;
+
+// Save state - local + sync to backend when logged in
 function saveState() {
-  localStorage.setItem('focusOS_state', JSON.stringify({
+  const payload = {
     mission: state.mission,
     goal: state.goal,
     task: state.task,
     allowSites: state.allowSites,
     allowApps: state.allowApps,
+    googleAlwaysAllowed: state.googleAlwaysAllowed,
     soundscape: state.soundscape,
     soundscapeEnabled: state.soundscapeEnabled,
     streak: state.streak
-  }));
+  };
+  localStorage.setItem('focusOS_state', JSON.stringify(payload));
+  const longTermData = { mission: state.mission, goal: state.goal, needleMover: state.task };
+  localStorage.setItem('0per8r_longterm', JSON.stringify(longTermData));
+
+  const token = localStorage.getItem('0per8r_sessionToken');
+  if (token) {
+    clearTimeout(saveToServerTimeout);
+    saveToServerTimeout = setTimeout(() => {
+      fetch(`${API_BASE}/api/user`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, ...payload })
+      }).catch(() => {});
+    }, 500);
+  }
 }
 
 // Update UI
@@ -228,12 +288,25 @@ function updateUI() {
       missionInput.value = state.mission;
     }
     
+    // Goal
+    const goalInput = document.getElementById('goal-input');
+    if (goalInput) {
+      goalInput.value = state.goal;
+    }
+    
+    // Task (Needle-Mover)
+    const taskInput = document.getElementById('task-input');
+    if (taskInput) {
+      taskInput.value = state.task;
+    }
+    
     updateMITSelect();
     
     
     // Tags
     const removeSiteTag = (site) => {
-      state.allowSites = state.allowSites.filter(s => s !== site);
+      // Remove case-insensitively
+      state.allowSites = state.allowSites.filter(s => s.toLowerCase() !== site.toLowerCase());
       saveState();
       // Immediately re-render tags to update UI
       renderTags('allow-sites-tags', state.allowSites, removeSiteTag);
@@ -241,17 +314,36 @@ function updateUI() {
     renderTags('allow-sites-tags', state.allowSites, removeSiteTag);
     
     const removeAppTag = (app) => {
-      state.allowApps = state.allowApps.filter(a => a !== app);
+      // Remove case-insensitively
+      state.allowApps = state.allowApps.filter(a => a.toLowerCase() !== app.toLowerCase());
       saveState();
       // Immediately re-render tags to update UI
       renderTags('allow-apps-tags', state.allowApps, removeAppTag);
     };
     renderTags('allow-apps-tags', state.allowApps, removeAppTag);
     
+    // Google always allowed toggle
+    const googleToggle = document.getElementById('google-always-allowed-toggle');
+    const googleNote = document.getElementById('google-note');
+    if (googleToggle) {
+      googleToggle.checked = state.googleAlwaysAllowed;
+    }
+    if (googleNote) {
+      googleNote.textContent = state.googleAlwaysAllowed 
+        ? 'google.com is always allowed. All other websites will be blocked.' 
+        : 'All websites except those listed above will be blocked.';
+    }
+    
     // Streak
     const streakCount = document.getElementById('streak-count');
     if (streakCount) {
       streakCount.textContent = state.streak;
+    }
+    
+    // Windows: show Uninstall button only on Windows
+    const uninstallBtn = document.getElementById('uninstall-btn');
+    if (uninstallBtn && window.electronAPI && typeof window.electronAPI.getPlatform === 'function') {
+      uninstallBtn.style.display = window.electronAPI.getPlatform() === 'win32' ? '' : 'none';
     }
     
     // Soundscape sliders
@@ -264,19 +356,25 @@ function updateUI() {
       }
     });
     
-    // Update soundscape toggle buttons
+    // Update soundscape toggle buttons - ensure they reflect current state
     const toggleBtn1 = document.getElementById('soundscape-toggle');
     if (toggleBtn1) {
-      toggleBtn1.textContent = state.soundscapeEnabled ? 'ON' : 'OFF';
-      toggleBtn1.style.background = state.soundscapeEnabled ? '#000' : '#333';
-      toggleBtn1.style.borderColor = state.soundscapeEnabled ? '#fff' : '#666';
+      const isEnabled = state.soundscapeEnabled;
+      toggleBtn1.textContent = isEnabled ? 'ON' : 'OFF';
+      toggleBtn1.style.background = isEnabled ? '#000' : '#333';
+      toggleBtn1.style.borderColor = isEnabled ? '#fff' : '#666';
+      toggleBtn1.style.color = '#fff';
+      console.log('Updated soundscape toggle 1:', isEnabled ? 'ON' : 'OFF');
     }
     
     const toggleBtn2 = document.getElementById('session-soundscape-toggle');
     if (toggleBtn2) {
-      toggleBtn2.textContent = state.soundscapeEnabled ? 'ON' : 'OFF';
-      toggleBtn2.style.background = state.soundscapeEnabled ? '#000' : '#333';
-      toggleBtn2.style.borderColor = state.soundscapeEnabled ? '#fff' : '#666';
+      const isEnabled = state.soundscapeEnabled;
+      toggleBtn2.textContent = isEnabled ? 'ON' : 'OFF';
+      toggleBtn2.style.background = isEnabled ? '#000' : '#333';
+      toggleBtn2.style.borderColor = isEnabled ? '#fff' : '#666';
+      toggleBtn2.style.color = '#fff';
+      console.log('Updated soundscape toggle 2:', isEnabled ? 'ON' : 'OFF');
     }
   } catch (e) {
     console.error('Error in updateUI:', e);
@@ -437,7 +535,12 @@ function updateMITSelect() {
   const select = document.getElementById('mit-select');
   if (!select) return;
   
-  select.innerHTML = '<option value="0">' + (state.task || 'No needle-mover set') + '</option>';
+  // Only show task if it's not empty
+  if (state.task && state.task.trim()) {
+    select.innerHTML = '<option value="0">' + state.task.trim() + '</option>';
+  } else {
+    select.innerHTML = '<option value="0">Select needle-mover...</option>';
+  }
 }
 
 // Play sound using HTML5 Audio
@@ -549,31 +652,177 @@ function initializeEventListeners() {
     });
   }
   
+  // Helper function to validate URL - very strict validation
+  function isValidUrl(url) {
+    try {
+      if (!url || typeof url !== 'string') {
+        return false;
+      }
+      
+      // Clean the URL - remove protocol and www
+      let cleaned = url.trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '');
+      
+      // Remove any trailing slashes or paths
+      cleaned = cleaned.split('/')[0].split('?')[0].split('#')[0];
+      
+      // Must not be empty after cleaning
+      if (!cleaned || cleaned.length === 0) {
+        return false;
+      }
+      
+      // Must have at least one dot
+      if (!cleaned.includes('.')) {
+        return false;
+      }
+      
+      // Must not contain spaces, tabs, or newlines
+      if (/\s/.test(cleaned)) {
+        return false;
+      }
+      
+      // Must not contain invalid characters (only alphanumeric, dots, hyphens allowed)
+      if (!/^[a-zA-Z0-9.\-]+$/.test(cleaned)) {
+        return false;
+      }
+      
+      // Must not start or end with dot or hyphen
+      if (cleaned.startsWith('.') || cleaned.endsWith('.') || 
+          cleaned.startsWith('-') || cleaned.endsWith('-')) {
+        return false;
+      }
+      
+      // Must not have consecutive dots
+      if (cleaned.includes('..')) {
+        return false;
+      }
+      
+      // Split into parts
+      const parts = cleaned.split('.');
+      if (parts.length < 2) {
+        return false;
+      }
+      
+      // TLD (last part) must be at least 2 characters and only letters
+      const tld = parts[parts.length - 1];
+      if (tld.length < 2 || !/^[a-zA-Z]{2,}$/.test(tld)) {
+        return false;
+      }
+      
+      // Each part must be valid
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        
+        // Must not be empty
+        if (!part || part.length === 0) {
+          return false;
+        }
+        
+        // Must not start or end with hyphen
+        if (part.startsWith('-') || part.endsWith('-')) {
+          return false;
+        }
+        
+        // Must only contain alphanumeric and hyphens
+        if (!/^[a-zA-Z0-9-]+$/.test(part)) {
+          return false;
+        }
+        
+        // First part (domain name) must have at least one letter or number
+        if (i === 0 && !/[a-zA-Z0-9]/.test(part)) {
+          return false;
+        }
+      }
+      
+      // Must be a reasonable length (max 253 characters for full domain)
+      if (cleaned.length > 253) {
+        return false;
+      }
+      
+      // Each part must be max 63 characters (DNS limit)
+      for (let part of parts) {
+        if (part.length > 63) {
+          return false;
+        }
+      }
+      
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  
   // Tags - Sites
-  document.getElementById('allow-sites-input').addEventListener('keypress', (e) => {
+  document.getElementById('allow-sites-input').addEventListener('keypress', async (e) => {
     if (e.key === 'Enter' && e.target.value.trim()) {
-      const value = e.target.value.trim().replace(/^https?:\/\//, '').replace(/^www\./, '');
-      if (!state.allowSites.includes(value)) {
+      const input = e.target;
+      const value = input.value.trim().replace(/^https?:\/\//, '').replace(/^www\./, '');
+      
+      // Validate URL
+      if (!isValidUrl(value)) {
+        input.value = '';
+        input.placeholder = 'Invalid URL. Try again...';
+        input.style.borderColor = '#f00';
+        setTimeout(() => {
+          input.placeholder = 'e.g., docs.google.com (Enter)';
+          input.style.borderColor = '';
+        }, 2000);
+        return;
+      }
+      
+      // Check if already exists (case-insensitive)
+      const valueLower = value.toLowerCase();
+      if (!state.allowSites.some(s => s.toLowerCase() === valueLower)) {
         state.allowSites.push(value);
-        e.target.value = '';
+        input.value = '';
         saveState();
         updateUI();
+      } else {
+        input.value = '';
       }
     }
   });
   
-  // Tags - Apps
+  // Tags - Apps (case-insensitive, no strict validation - allow any app name)
   document.getElementById('allow-apps-input').addEventListener('keypress', (e) => {
     if (e.key === 'Enter' && e.target.value.trim()) {
-      const value = e.target.value.trim();
-      if (!state.allowApps.includes(value)) {
+      const input = e.target;
+      const value = input.value.trim();
+      
+      // Basic validation: must not be empty and should be reasonable length
+      if (value.length === 0 || value.length > 100) {
+        input.value = '';
+        input.placeholder = 'Invalid app name...';
+        input.style.borderColor = '#f00';
+        setTimeout(() => {
+          input.placeholder = 'e.g., VS Code (Enter)';
+          input.style.borderColor = '';
+        }, 2000);
+        return;
+      }
+      
+      // Check if already exists (case-insensitive)
+      const valueLower = value.toLowerCase();
+      if (!state.allowApps.some(a => a.toLowerCase() === valueLower)) {
+        // Store with original case for display, but compare case-insensitively
         state.allowApps.push(value);
-        e.target.value = '';
+        input.value = '';
         saveState();
         updateUI();
+      } else {
+        input.value = '';
       }
     }
   });
+  
+  // Google always allowed toggle
+  const googleToggle = document.getElementById('google-always-allowed-toggle');
+  if (googleToggle) {
+    googleToggle.addEventListener('change', (e) => {
+      state.googleAlwaysAllowed = e.target.checked;
+      saveState();
+      updateUI();
+    });
+  }
   
   // Soundscape sliders
   document.querySelectorAll('.sound-slider').forEach(slider => {
@@ -601,11 +850,18 @@ function initializeEventListeners() {
     });
   });
   
-  // Soundscape toggle buttons
+  // Soundscape toggle buttons - Remove old listeners first to prevent duplicates
   const soundscapeToggle1 = document.getElementById('soundscape-toggle');
   if (soundscapeToggle1) {
-    soundscapeToggle1.addEventListener('click', () => {
+    // Clone and replace to remove all event listeners
+    const newToggle1 = soundscapeToggle1.cloneNode(true);
+    soundscapeToggle1.parentNode.replaceChild(newToggle1, soundscapeToggle1);
+    newToggle1.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('Soundscape toggle clicked, current state:', state.soundscapeEnabled);
       state.soundscapeEnabled = !state.soundscapeEnabled;
+      console.log('New state:', state.soundscapeEnabled);
       saveState();
       updateUI();
       updateSoundscape();
@@ -614,8 +870,15 @@ function initializeEventListeners() {
   
   const soundscapeToggle2 = document.getElementById('session-soundscape-toggle');
   if (soundscapeToggle2) {
-    soundscapeToggle2.addEventListener('click', () => {
+    // Clone and replace to remove all event listeners
+    const newToggle2 = soundscapeToggle2.cloneNode(true);
+    soundscapeToggle2.parentNode.replaceChild(newToggle2, soundscapeToggle2);
+    newToggle2.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('Session soundscape toggle clicked, current state:', state.soundscapeEnabled);
       state.soundscapeEnabled = !state.soundscapeEnabled;
+      console.log('New state:', state.soundscapeEnabled);
       saveState();
       updateUI();
       updateSoundscape();
@@ -640,6 +903,16 @@ function initializeEventListeners() {
   
   // Electron break attempt listener
   if (window.electronAPI) {
+    // Handle quit password request
+    window.electronAPI.onRequestQuitPassword((event, data) => {
+      const attempts = (data && data.attempts) ? data.attempts : 1;
+      showPasswordPrompt('Enter your ACCOUNT password to quit 0per8r.', attempts).then((verified) => {
+        if (window.electronAPI) {
+          window.electronAPI.verifyQuitPassword(verified);
+        }
+      });
+    });
+    
     // Handle hosts blocking errors
     window.electronAPI.onHostsBlockingError((event, data) => {
       const message = (data && data.message) ? data.message : 'System-wide blocking setup failed. You may need to grant admin privileges when prompted. Session will continue with app-level blocking only.';
@@ -777,16 +1050,22 @@ async function startSession() {
     console.log('Starting session...');
     
     const mitSelect = document.getElementById('mit-select');
-    const durationSelect = document.getElementById('duration-select');
+    const durationInput = document.getElementById('duration-input');
     
-    if (!mitSelect || !durationSelect) {
+    if (!mitSelect || !durationInput) {
       console.error('Missing required elements');
       alert('Error: Missing required elements. Please refresh the app.');
       return;
     }
     
     const mitIndex = mitSelect.value;
-    const duration = parseInt(durationSelect.value);
+    const duration = parseInt(durationInput.value);
+    
+    if (!duration || isNaN(duration) || duration < 1 || duration > 999) {
+      alert('Please enter a valid duration between 1 and 999 minutes.');
+      durationInput.focus();
+      return;
+    }
     
     if (!mitIndex || mitIndex === '' || mitIndex === 'null') {
       alert('Please select your Most Important Task');
@@ -828,7 +1107,8 @@ async function startSession() {
       
       const result = await window.electronAPI.startSession({
         allowApps: state.allowApps || [],
-        allowSites: state.allowSites || []
+        allowSites: state.allowSites || [],
+        googleAlwaysAllowed: state.googleAlwaysAllowed !== false
       });
       
       console.log('Electron startSession result:', result);
@@ -900,6 +1180,107 @@ function startTimer() {
   updateTimer();
 }
 
+// Show password prompt modal (with optional multiple attempts)
+function showPasswordPrompt(message, attempts = 1) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('password-modal');
+    const messageEl = document.getElementById('password-modal-message');
+    const input = document.getElementById('password-input');
+    const confirmBtn = document.getElementById('password-modal-confirm');
+    const cancelBtn = document.getElementById('password-modal-cancel');
+    
+    if (!modal || !messageEl || !input || !confirmBtn || !cancelBtn) {
+      console.error('Password modal elements not found');
+      resolve(false);
+      return;
+    }
+    
+    let attemptCount = 0;
+    const maxAttempts = attempts || 1;
+    const initialMessage = message || 'Please enter your password to continue.';
+    
+    messageEl.textContent = maxAttempts > 1 ? `${initialMessage}\n\nEnter your ACCOUNT password (Attempt 1 of ${maxAttempts}):` : initialMessage;
+    input.value = '';
+    modal.style.display = 'flex';
+    input.focus();
+    
+    const cleanup = () => {
+      modal.style.display = 'none';
+      input.value = '';
+      confirmBtn.onclick = null;
+      cancelBtn.onclick = null;
+      input.onkeydown = null;
+    };
+    
+    const handleConfirm = () => {
+      const password = input.value;
+      if (!password) {
+        return; // Don't resolve if password is empty
+      }
+      
+      // Get current user
+      const currentUser = localStorage.getItem('0per8r_currentUser');
+      if (!currentUser) {
+        alert('No user found. Please log in again.');
+        cleanup();
+        resolve(false);
+        return;
+      }
+      
+      // Get user data
+      const users = JSON.parse(localStorage.getItem('0per8r_users') || '{}');
+      const userData = users[currentUser];
+      if (!userData) {
+        alert('User data not found. Please log in again.');
+        cleanup();
+        resolve(false);
+        return;
+      }
+      
+      // Verify password
+      const enteredHash = hashPassword(password);
+      if (enteredHash === userData.passwordHash) {
+        attemptCount++;
+        if (attemptCount >= maxAttempts) {
+          // All attempts successful
+          cleanup();
+          resolve(true);
+        } else {
+          // Need more attempts
+          const remaining = maxAttempts - attemptCount;
+          messageEl.textContent = `${initialMessage}\n\nAttempt ${attemptCount} of ${maxAttempts} successful. Enter your ACCOUNT password ${remaining} more time${remaining > 1 ? 's' : ''} (Attempt ${attemptCount + 1} of ${maxAttempts}):`;
+          input.value = '';
+          input.focus();
+        }
+      } else {
+        // Wrong password - don't reset, just show error
+        const currentAttempt = attemptCount + 1;
+        alert(`Incorrect ACCOUNT password. Please try again. (Attempt ${currentAttempt} of ${maxAttempts})`);
+        input.value = '';
+        input.focus();
+      }
+    };
+    
+    const handleCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+    
+    confirmBtn.onclick = handleConfirm;
+    cancelBtn.onclick = handleCancel;
+    
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleConfirm();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        handleCancel();
+      }
+    };
+  });
+}
+
 // Handle emergency exit
 async function handleEmergencyExit() {
   try {
@@ -910,7 +1291,14 @@ async function handleEmergencyExit() {
       return; // User cancelled
     }
     
-    console.log('Emergency exit confirmed');
+    // Show password prompt (3 attempts required)
+    const passwordCorrect = await showPasswordPrompt('Enter your ACCOUNT password to exit The Execution Chamber.', 3);
+    
+    if (!passwordCorrect) {
+      return; // User cancelled or password incorrect
+    }
+    
+    console.log('Emergency exit confirmed with password');
     
     state.isLocked = false;
     
@@ -987,32 +1375,52 @@ function handleCompletion() {
   updateUI();
 }
 
+// Backend API - set to your Vercel deployment URL (see BACKEND_SETUP.md)
+const API_BASE = 'https://0per8r.vercel.app';
+
 // Authentication Functions
 function checkAuthentication() {
   const currentUser = localStorage.getItem('0per8r_currentUser');
   const sessionToken = localStorage.getItem('0per8r_sessionToken');
+  const sessionExpiry = localStorage.getItem('0per8r_sessionExpiry');
+  
+  console.log('Checking authentication:', { currentUser, hasToken: !!sessionToken, hasExpiry: !!sessionExpiry });
   
   if (currentUser && sessionToken) {
-    // Verify session is still valid (for now, just check if it exists)
-    // In future, this could check with a server
+    // Check if session has expired
+    if (sessionExpiry) {
+      const expiryTime = parseInt(sessionExpiry, 10);
+      const now = Date.now();
+      console.log('Session expiry check:', { expiryTime, now, expired: now > expiryTime });
+      if (now > expiryTime) {
+        // Session expired, clear it
+        console.log('Session expired, clearing...');
+        clearSession();
+        state.isAuthenticated = false;
+        state.currentUser = null;
+        return false;
+      }
+    }
+    // Session is valid
+    console.log('Session valid, user authenticated:', currentUser);
     state.isAuthenticated = true;
     state.currentUser = currentUser;
     return true;
   }
   
+  console.log('No valid session found');
   state.isAuthenticated = false;
   state.currentUser = null;
   return false;
 }
 
-function saveUserData(username, email, passwordHash, verified = false, verificationCode = null) {
+function saveUserData(username, email, passwordHash, verified = true, verificationCode = null) {
   // Store user accounts (in production, this would be on a server)
   const users = JSON.parse(localStorage.getItem('0per8r_users') || '{}');
   users[username] = {
     email: email.toLowerCase(),
     passwordHash: passwordHash,
-    verified: verified,
-    verificationCode: verificationCode,
+    verified: true,
     createdAt: new Date().toISOString()
   };
   // Also store by email for lookup
@@ -1023,6 +1431,10 @@ function saveUserData(username, email, passwordHash, verified = false, verificat
 }
 
 function getUserData(usernameOrEmail) {
+  if (!usernameOrEmail || typeof usernameOrEmail !== 'string') {
+    return null;
+  }
+  
   const users = JSON.parse(localStorage.getItem('0per8r_users') || '{}');
   const usersByEmail = JSON.parse(localStorage.getItem('0per8r_users_by_email') || '{}');
   
@@ -1041,6 +1453,10 @@ function getUserData(usernameOrEmail) {
 }
 
 function getUserByEmail(email) {
+  if (!email || typeof email !== 'string') {
+    return null;
+  }
+  
   const usersByEmail = JSON.parse(localStorage.getItem('0per8r_users_by_email') || '{}');
   const username = usersByEmail[email.toLowerCase()];
   if (username) {
@@ -1055,10 +1471,18 @@ function getUserByUsername(username) {
   return users[username] || null;
 }
 
-// Validate email format
+// Validate email format - strict: valid structure, recognised TLDs
 function isValidEmail(email) {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
+  if (!email || typeof email !== 'string' || email.length > 254) return false;
+  const trimmed = email.trim();
+  const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
+  if (!emailRegex.test(trimmed)) return false;
+  const parts = trimmed.split('@');
+  const domain = parts[1];
+  const tld = domain ? domain.split('.').pop() : '';
+  const commonTlds = ['com', 'org', 'net', 'edu', 'gov', 'co', 'io', 'me', 'app', 'dev', 'info', 'biz', 'uk', 'de', 'fr', 'jp', 'cn', 'in', 'au', 'br'];
+  if (tld && tld.length >= 2 && tld.length <= 6 && /^[a-z]{2,6}$/i.test(tld)) return true;
+  return commonTlds.includes(tld.toLowerCase());
 }
 
 // Generate verification code
@@ -1066,7 +1490,7 @@ function generateVerificationCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// Send verification email using Resend API
+// Send verification email using backend API (Resend)
 async function sendVerificationEmail(email, code) {
   // Store code with expiry (24 hours)
   const verificationData = {
@@ -1076,58 +1500,35 @@ async function sendVerificationEmail(email, code) {
   };
   localStorage.setItem(`0per8r_verification_${email.toLowerCase()}`, JSON.stringify(verificationData));
   
-  // Get API key from localStorage (user needs to set this)
-  const apiKey = localStorage.getItem('0per8r_resend_api_key');
-  
-  if (!apiKey) {
-    console.error('Resend API key not set. Email not sent.');
-    console.log(`[EMAIL VERIFICATION] Code for ${email}: ${code}`);
-    console.log('To enable real emails, set your Resend API key in the app settings.');
-    return Promise.resolve({ success: false, error: 'API key not configured' });
-  }
-  
   try {
-    // Send email via Resend API
-    const response = await fetch('https://api.resend.com/emails', {
+    // Send email via backend API endpoint
+    const backendUrl = 'https://0per8r-email-api-real.vercel.app/api/send-verification';
+    
+    const response = await fetch(backendUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        from: '0per8r <onboarding@resend.dev>', // Change this to your verified domain
         to: email,
-        subject: '0per8r Email Verification',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h1 style="color: #0f0;">0per8r Email Verification</h1>
-            <p>Your verification code is:</p>
-            <div style="background: #1a1a2e; padding: 20px; text-align: center; margin: 20px 0;">
-              <h2 style="color: #0f0; font-size: 32px; letter-spacing: 8px; margin: 0;">${code}</h2>
-            </div>
-            <p style="color: #666; font-size: 12px;">This code expires in 24 hours.</p>
-            <p style="color: #666; font-size: 12px;">If you didn't request this, please ignore this email.</p>
-          </div>
-        `,
-        text: `Your 0per8r verification code is: ${code}\n\nThis code expires in 24 hours.`
+        code: code,
+        subject: '0per8r Email Verification'
       })
     });
     
-    const result = await response.json();
-    
     if (response.ok) {
+      const result = await response.json();
       console.log('Verification email sent successfully to', email);
       return { success: true };
     } else {
-      console.error('Failed to send email:', result);
-      // Fallback: show in console
-      console.log(`[EMAIL VERIFICATION] Code for ${email}: ${code}`);
-      return { success: false, error: result.message || 'Failed to send email' };
+      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+      console.error('Backend email service error:', errorData);
+      throw new Error(errorData.error || 'Email service error');
     }
   } catch (error) {
     console.error('Error sending verification email:', error);
-    // Fallback: show in console
-    console.log(`[EMAIL VERIFICATION] Code for ${email}: ${code}`);
+    // Still return success:false but don't show code in UI - user should check email
+    // The code is stored in localStorage so verification can still work
     return { success: false, error: error.message };
   }
 }
@@ -1146,11 +1547,36 @@ function hashPassword(password) {
 
 function createSession(username) {
   const sessionToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  const expiryTime = Date.now() + (30 * 24 * 60 * 60 * 1000);
   localStorage.setItem('0per8r_currentUser', username);
   localStorage.setItem('0per8r_sessionToken', sessionToken);
-  localStorage.setItem('0per8r_sessionExpiry', (Date.now() + (30 * 24 * 60 * 60 * 1000)).toString()); // 30 days
+  localStorage.setItem('0per8r_sessionExpiry', expiryTime.toString());
   state.isAuthenticated = true;
   state.currentUser = username;
+}
+
+// Create session from API response (backend auth)
+function createSessionFromApi(token, expiry, user) {
+  if (!token || !user || !user.username) return;
+  localStorage.setItem('0per8r_currentUser', user.username);
+  localStorage.setItem('0per8r_sessionToken', token);
+  localStorage.setItem('0per8r_sessionExpiry', String(expiry || Date.now() + 30 * 24 * 60 * 60 * 1000));
+  state.isAuthenticated = true;
+  state.currentUser = user.username;
+}
+
+// Apply preferences from API user object to state
+function applyPreferencesToState(prefs) {
+  if (!prefs || typeof prefs !== 'object') return;
+  if (prefs.mission !== undefined) state.mission = prefs.mission;
+  if (prefs.goal !== undefined) state.goal = prefs.goal;
+  if (prefs.task !== undefined) state.task = prefs.task;
+  if (prefs.allowSites) state.allowSites = prefs.allowSites;
+  if (prefs.allowApps) state.allowApps = prefs.allowApps;
+  if (prefs.googleAlwaysAllowed !== undefined) state.googleAlwaysAllowed = prefs.googleAlwaysAllowed;
+  if (prefs.soundscape) state.soundscape = { ...state.soundscape, ...prefs.soundscape };
+  if (prefs.soundscapeEnabled !== undefined) state.soundscapeEnabled = prefs.soundscapeEnabled;
+  if (prefs.streak !== undefined) state.streak = prefs.streak;
 }
 
 function clearSession() {
@@ -1160,6 +1586,35 @@ function clearSession() {
   state.isAuthenticated = false;
   state.currentUser = null;
 }
+
+// Logout function
+window.handleLogout = function() {
+  if (confirm('Are you sure you want to log out?')) {
+    clearSession();
+    showPhase('auth');
+    // Clear any error messages
+    clearAuthErrors();
+    // Reset auth tabs to login
+    switchAuthTab('login');
+  }
+};
+
+// Windows uninstaller - opens Uninstall 0per8r.exe
+window.handleUninstall = async function() {
+  if (!window.electronAPI || !window.electronAPI.openUninstaller) return;
+  if (!confirm('This will launch the 0per8r uninstaller. The app will need to close for uninstallation to complete.\n\nContinue?')) return;
+  try {
+    const result = await window.electronAPI.openUninstaller();
+    if (result && result.ok) {
+      alert('Uninstaller launched. Please follow the prompts to remove 0per8r.');
+    } else if (result && result.error) {
+      alert(result.error);
+    }
+  } catch (e) {
+    console.error('Uninstall error:', e);
+    alert('Failed to open uninstaller. Use Settings > Apps to uninstall 0per8r.');
+  }
+};
 
 // Global functions for inline event handlers - must be on window object
 window.switchAuthTab = function(tab) {
@@ -1180,6 +1635,9 @@ window.switchAuthTab = function(tab) {
     if (signupForm) signupForm.classList.add('active');
     if (loginForm) loginForm.classList.remove('active');
   }
+  // Ensure verify form is hidden (no longer used)
+  const verifyForm = document.getElementById('verify-email-form');
+  if (verifyForm) verifyForm.style.display = 'none';
   clearAuthErrors();
 };
 
@@ -1213,83 +1671,38 @@ function showAuthError(message, isSignup = false) {
 }
 
 // Make handleLogin global so inline handlers can access it
-window.handleLogin = function() {
-  console.log('handleLogin called');
+window.handleLogin = async function() {
   const usernameEl = document.getElementById('login-username');
   const passwordEl = document.getElementById('login-password');
-  
-  if (!usernameEl || !passwordEl) {
-    console.error('Login form elements not found!');
-    showAuthError('Form error - please refresh the page');
-    return;
-  }
-  
+  if (!usernameEl || !passwordEl) { showAuthError('Form error - please refresh'); return; }
   const usernameOrEmail = usernameEl.value.trim();
   const password = passwordEl.value;
-  
-  console.log('Login attempt:', { usernameOrEmail, passwordLength: password.length });
-  
   clearAuthErrors();
-  
   if (!usernameOrEmail || !password) {
     showAuthError('Please enter both email/username and password');
     return;
   }
-  
-  const userData = getUserData(usernameOrEmail);
-  console.log('User data retrieved:', userData ? 'found' : 'not found');
-  
-  if (!userData) {
-    showAuthError('Account not found. Please sign up first.');
-    return;
-  }
-  
-  // Check if email is verified
-  if (!userData.verified) {
-    showAuthError('Please verify your email first. Check your inbox for the verification code.');
-    // Show verification form
-    const pending = JSON.parse(localStorage.getItem('0per8r_pending_verification') || 'null');
-    if (!pending) {
-      // Create pending verification if it doesn't exist
-      const usersByEmail = JSON.parse(localStorage.getItem('0per8r_users_by_email') || '{}');
-      const username = usersByEmail[userData.email.toLowerCase()] || usernameOrEmail;
-      localStorage.setItem('0per8r_pending_verification', JSON.stringify({
-        username: username,
-        email: userData.email
-      }));
-    }
-    document.getElementById('login-form').classList.remove('active');
-    document.getElementById('signup-form').style.display = 'none';
-    document.getElementById('verify-email-form').style.display = 'block';
-    return;
-  }
-  
-  const passwordHash = hashPassword(password);
-  
-  // Get username for session
-  const usersByEmail = JSON.parse(localStorage.getItem('0per8r_users_by_email') || '{}');
-  const username = usersByEmail[usernameOrEmail.toLowerCase()] || usernameOrEmail;
-  console.log('Password hash comparison:', { stored: userData.passwordHash, computed: passwordHash });
-  
-  if (userData.passwordHash !== passwordHash) {
-    showAuthError('Incorrect password');
-    return;
-  }
-  
-  // Login successful
-  console.log('Login successful!');
-  createSession(username);
-  showPhase('dashboard');
-  
-  // Initialize app after login
-  loadState();
-  initializeEventListeners();
-  updateUI();
-  
   try {
-    initAudioContext();
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emailOrUsername: usernameOrEmail, password })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showAuthError(data.error || 'Login failed');
+      return;
+    }
+    createSessionFromApi(data.token, data.expiry, data.user);
+    showPhase('dashboard');
+    applyPreferencesToState(data.user && data.user.preferences);
+    await loadState();
+    initializeEventListeners();
+    updateUI();
+    try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
   } catch (e) {
-    console.warn('Audio init failed (non-critical):', e);
+    console.error('Login error:', e);
+    showAuthError('Network error. Please check your connection.');
   }
 };
 
@@ -1342,74 +1755,27 @@ window.handleSignup = async function() {
     return;
   }
   
-  // Check if email already exists
-  if (getUserByEmail(email)) {
-    showAuthError('An account with this email already exists', true);
-    return;
-  }
-  
-  // Check if username already exists
-  if (getUserByUsername(username)) {
-    showAuthError('Username already taken', true);
-    return;
-  }
-  
-  // Generate verification code
-  const verificationCode = generateVerificationCode();
-  
-  // Send verification email
   try {
-    const emailResult = await sendVerificationEmail(email, verificationCode);
-    
-    // Create account (unverified)
-    console.log('Creating account for:', username, email);
-    const passwordHash = hashPassword(password);
-    saveUserData(username, email, passwordHash, false, verificationCode);
-    
-    // Store pending verification
-    localStorage.setItem('0per8r_pending_verification', JSON.stringify({
-      username: username,
-      email: email
-    }));
-    
-    // Show verification form
-    document.getElementById('signup-form').style.display = 'none';
-    document.getElementById('verify-email-form').style.display = 'block';
-    
-    // Show success message
-    const verifyError = document.getElementById('verify-error');
-    if (verifyError) {
-      if (emailResult && emailResult.success) {
-        verifyError.textContent = `Verification code sent to ${email}. Check your email.`;
-        verifyError.style.color = '#0f0';
-      } else {
-        // API key not set or email failed - show code in message
-        verifyError.innerHTML = `
-          <div style="color: #ff0; margin-bottom: 8px;">
-            ⚠️ Email not configured. Your verification code is: <strong style="font-size: 16px;">${verificationCode}</strong>
-          </div>
-          <div style="color: #aaa; font-size: 11px;">
-            To enable email sending, add your Resend API key. Check EMAIL_SETUP_SIMPLE.md for instructions.
-          </div>
-        `;
-        verifyError.style.color = '#ff0';
-      }
+    const res = await fetch(`${API_BASE}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim(), username: username.trim(), password })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showAuthError(data.error || 'Sign up failed', true);
+      return;
     }
-    
-  } catch (error) {
-    console.error('Error sending verification email:', error);
-    // Still show verification form with code
-    const verifyError = document.getElementById('verify-error');
-    if (verifyError) {
-      verifyError.innerHTML = `
-        <div style="color: #ff0; margin-bottom: 8px;">
-          ⚠️ Email failed. Your verification code is: <strong style="font-size: 16px;">${verificationCode}</strong>
-        </div>
-      `;
-      verifyError.style.color = '#ff0';
-    }
-    document.getElementById('signup-form').style.display = 'none';
-    document.getElementById('verify-email-form').style.display = 'block';
+    createSessionFromApi(data.token, data.expiry, data.user);
+    showPhase('dashboard');
+    applyPreferencesToState(data.user && data.user.preferences);
+    await loadState();
+    initializeEventListeners();
+    updateUI();
+    try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
+  } catch (e) {
+    console.error('Signup error:', e);
+    showAuthError('Network error. Please check your connection.', true);
   }
 };
 
@@ -1525,12 +1891,23 @@ window.handleResendCode = async function() {
     const verifyError = document.getElementById('verify-error');
     if (verifyError) {
       if (emailResult && emailResult.success) {
-        verifyError.textContent = `New verification code sent to ${email}`;
+        verifyError.innerHTML = `
+          <div style="color: #0f0; margin-bottom: 8px; font-size: 14px;">
+            ✅ New verification code sent to ${email}
+          </div>
+          <div style="color: #aaa; font-size: 12px;">
+            Please check your inbox (and spam folder) for the verification code.
+          </div>
+        `;
         verifyError.style.color = '#0f0';
       } else {
+        // Email sending failed
         verifyError.innerHTML = `
-          <div style="color: #ff0; margin-bottom: 8px;">
-            ⚠️ Email not configured. Your code is: <strong style="font-size: 16px;">${verificationCode}</strong>
+          <div style="color: #ff0; margin-bottom: 8px; font-size: 14px;">
+            ⚠️ Email sending failed: ${emailResult?.error || 'Unknown error'}
+          </div>
+          <div style="color: #aaa; font-size: 12px;">
+            Please try again. The verification code has been generated and will work when you receive the email.
           </div>
         `;
         verifyError.style.color = '#ff0';
@@ -1541,8 +1918,11 @@ window.handleResendCode = async function() {
     const verifyError = document.getElementById('verify-error');
     if (verifyError) {
       verifyError.innerHTML = `
-        <div style="color: #ff0; margin-bottom: 8px;">
-          ⚠️ Email failed. Your code is: <strong style="font-size: 16px;">${verificationCode}</strong>
+        <div style="color: #ff0; margin-bottom: 8px; font-size: 14px;">
+          ⚠️ Error: ${error.message || 'Failed to send verification email'}
+        </div>
+        <div style="color: #aaa; font-size: 12px;">
+          Please try again or contact support.
         </div>
       `;
       verifyError.style.color = '#ff0';
