@@ -63,3 +63,11 @@ GH_TOKEN=YOUR_TOKEN npm run publish:mac
 3. **Check visibility:** If private, token needs access
 4. **Create repo first:** If it doesn't exist, create it on GitHub
 
+
+
+
+
+
+
+
+

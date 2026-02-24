@@ -52,3 +52,11 @@ GH_TOKEN=YOUR_TOKEN npm run build:all
 
 **Don't upload manually** - use the build command with token. It handles everything automatically!
 
+
+
+
+
+
+
+
+
