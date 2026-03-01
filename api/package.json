@@ -1,14 +1,1 @@
-{
-  "name": "0per8r-api",
-  "version": "1.0.0",
-  "description": "0per8r Auth & User API",
-  "main": "index.js",
-  "scripts": {},
-  "dependencies": {
-    "@supabase/supabase-js": "^2.39.0",
-    "bcryptjs": "^2.4.3"
-  },
-  "engines": {
-    "node": "24.x"
-  }
-}
+{"name":"0per8r-api","version":"1.0.0","description":"0per8r Auth & User API","main":"index.js","scripts":{},"dependencies":{"@supabase/supabase-js":"^2.39.0","bcryptjs":"^2.4.3","stripe":"^14.0.0"},"engines":{"node":"24.x"}}

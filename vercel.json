@@ -5,12 +5,14 @@
     {"src": "api/send-verification.js", "use": "@vercel/node"},
     {"src": "api/auth/register.js", "use": "@vercel/node"},
     {"src": "api/auth/login.js", "use": "@vercel/node"},
-    {"src": "api/user.js", "use": "@vercel/node"}
+    {"src": "api/user.js", "use": "@vercel/node"},
+    {"src": "api/webhooks/stripe.js", "use": "@vercel/node"}
   ],
   "routes": [
     {"src": "/api/send-verification", "dest": "api/send-verification.js"},
     {"src": "/api/auth/register", "dest": "api/auth/register.js"},
     {"src": "/api/auth/login", "dest": "api/auth/login.js"},
-    {"src": "/api/user", "dest": "api/user.js"}
+    {"src": "/api/user", "dest": "api/user.js"},
+    {"src": "/api/webhooks/stripe", "dest": "api/webhooks/stripe.js"}
   ]
 }

@@ -1,4 +1,5 @@
 // 0per8r - Dashboard System
+// CONFIG: paste your Stripe Payment Link by searching for STRIPE_CHECKOUT_URL in this file
 const state = {
   mission: '',
   goal: '',
@@ -1375,8 +1376,15 @@ function handleCompletion() {
   updateUI();
 }
 
-// Backend API - set to your Vercel deployment URL (see BACKEND_SETUP.md)
-const API_BASE = 'https://0per8r.vercel.app';
+// Backend API - set to your Vercel deployment URL (see BACKEND_SETUP.md). Use https://
+function getApiBase() {
+  const url = 'https://0per8r-complete1-h9xxzfaf3-faiyaads-projects.vercel.app';
+  return url.startsWith('http') ? url : 'https://' + url;
+}
+const API_BASE = getApiBase();
+
+// PASTE YOUR STRIPE PAYMENT LINK HERE (from Stripe Dashboard > Payment Links). Example: 'https://buy.stripe.com/xxxxx'
+const STRIPE_CHECKOUT_URL = '';
 
 // Authentication Functions
 function checkAuthentication() {
@@ -1662,11 +1670,32 @@ function clearAuthErrors() {
 function showAuthError(message, isSignup = false) {
   const errorEl = isSignup ? document.getElementById('signup-error') : document.getElementById('auth-error');
   if (errorEl) {
+    errorEl.innerHTML = '';
     errorEl.textContent = message;
     errorEl.style.display = 'block';
     console.log('Auth error shown:', message, isSignup ? '(signup)' : '(login)');
   } else {
     console.error('Error element not found!', isSignup ? 'signup-error' : 'auth-error');
+  }
+}
+
+function showSubscriptionRequired(message) {
+  const errorEl = document.getElementById('auth-error');
+  if (!errorEl) return;
+  errorEl.style.display = 'block';
+  errorEl.innerHTML = message || 'Your free trial has ended.';
+  if (typeof STRIPE_CHECKOUT_URL === 'string' && STRIPE_CHECKOUT_URL.trim()) {
+    const link = document.createElement('a');
+    link.href = STRIPE_CHECKOUT_URL.trim();
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = 'Subscribe to continue';
+    link.style.display = 'block';
+    link.style.marginTop = '10px';
+    link.style.color = '#4ade80';
+    link.style.textDecoration = 'underline';
+    errorEl.appendChild(document.createElement('br'));
+    errorEl.appendChild(link);
   }
 }
 
@@ -1689,20 +1718,62 @@ window.handleLogin = async function() {
       body: JSON.stringify({ emailOrUsername: usernameOrEmail, password })
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      showAuthError(data.error || 'Login failed');
+    if (res.ok) {
+      createSessionFromApi(data.token, data.expiry, data.user);
+      showPhase('dashboard');
+      applyPreferencesToState(data.user && data.user.preferences);
+      await loadState();
+      initializeEventListeners();
+      updateUI();
+      try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
       return;
     }
-    createSessionFromApi(data.token, data.expiry, data.user);
+    if (res.status === 402 && (data.code === 'subscription_required' || data.message)) {
+      showSubscriptionRequired(data.message || data.error);
+      return;
+    }
+    const isServerConfigError = res.status === 500 || (data.error && (data.error.includes('configuration') || data.error.includes('Server configuration')));
+    if (isServerConfigError) {
+      const userData = getUserData(usernameOrEmail);
+      if (!userData) {
+        showAuthError('Account not found. Please sign up first.');
+        return;
+      }
+      const passwordHash = hashPassword(password);
+      const usersByEmail = JSON.parse(localStorage.getItem('0per8r_users_by_email') || '{}');
+      const username = usersByEmail[usernameOrEmail.toLowerCase()] || usernameOrEmail;
+      if (userData.passwordHash !== passwordHash) {
+        showAuthError('Incorrect password');
+        return;
+      }
+      createSession(username);
+      showPhase('dashboard');
+      await loadState();
+      initializeEventListeners();
+      updateUI();
+      try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
+      return;
+    }
+    showAuthError(data.error || 'Login failed');
+  } catch (e) {
+    const userData = getUserData(usernameOrEmail);
+    if (!userData) {
+      showAuthError('Cannot reach server. Please check your connection or try again later.');
+      return;
+    }
+    const passwordHash = hashPassword(password);
+    const usersByEmail = JSON.parse(localStorage.getItem('0per8r_users_by_email') || '{}');
+    const username = usersByEmail[usernameOrEmail.toLowerCase()] || usernameOrEmail;
+    if (userData.passwordHash !== passwordHash) {
+      showAuthError('Incorrect password');
+      return;
+    }
+    createSession(username);
     showPhase('dashboard');
-    applyPreferencesToState(data.user && data.user.preferences);
     await loadState();
     initializeEventListeners();
     updateUI();
     try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
-  } catch (e) {
-    console.error('Login error:', e);
-    showAuthError('Network error. Please check your connection.');
   }
 };
 
@@ -1762,20 +1833,55 @@ window.handleSignup = async function() {
       body: JSON.stringify({ email: email.trim(), username: username.trim(), password })
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      showAuthError(data.error || 'Sign up failed', true);
+    if (res.ok) {
+      createSessionFromApi(data.token, data.expiry, data.user);
+      showPhase('dashboard');
+      applyPreferencesToState(data.user && data.user.preferences);
+      await loadState();
+      initializeEventListeners();
+      updateUI();
+      try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
       return;
     }
-    createSessionFromApi(data.token, data.expiry, data.user);
+    const isServerConfigError = res.status === 500 || (data.error && (data.error.includes('configuration') || data.error.includes('Server configuration')));
+    if (isServerConfigError) {
+      if (getUserByEmail(email)) {
+        showAuthError('An account with this email already exists', true);
+        return;
+      }
+      if (getUserByUsername(username)) {
+        showAuthError('Username already taken', true);
+        return;
+      }
+      const passwordHash = hashPassword(password);
+      saveUserData(username, email, passwordHash, true);
+      createSession(username);
+      showPhase('dashboard');
+      await loadState();
+      initializeEventListeners();
+      updateUI();
+      try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
+      return;
+    }
+    const errMsg = (data && data.error) ? data.error : (`Sign up failed (${res.status}). Check backend and Supabase.`);
+    showAuthError(errMsg, true);
+  } catch (e) {
+    if (getUserByEmail(email)) {
+      showAuthError('An account with this email already exists', true);
+      return;
+    }
+    if (getUserByUsername(username)) {
+      showAuthError('Username already taken', true);
+      return;
+    }
+    const passwordHash = hashPassword(password);
+    saveUserData(username, email, passwordHash, true);
+    createSession(username);
     showPhase('dashboard');
-    applyPreferencesToState(data.user && data.user.preferences);
     await loadState();
     initializeEventListeners();
     updateUI();
     try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
-  } catch (e) {
-    console.error('Signup error:', e);
-    showAuthError('Network error. Please check your connection.', true);
   }
 };
 

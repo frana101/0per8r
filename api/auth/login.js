@@ -33,7 +33,7 @@ module.exports = async (req, res) => {
 
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, email, username, password_hash, preferences, created_at')
+      .select('id, email, username, password_hash, preferences, trial_ends_at, subscription_status, created_at')
       .eq(isEmail ? 'email' : 'username', isEmail ? input : emailOrUsername.trim())
       .single();
 
@@ -44,6 +44,17 @@ module.exports = async (req, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
       return res.status(401).json({ error: 'Incorrect password' });
+    }
+
+    const now = Date.now();
+    const trialActive = user.trial_ends_at != null && user.trial_ends_at > now;
+    const paid = user.subscription_status === 'active';
+    if (!trialActive && !paid) {
+      return res.status(402).json({
+        error: 'Your free trial has ended.',
+        code: 'subscription_required',
+        message: 'Subscribe to continue using 0per8r.'
+      });
     }
 
     const sessionToken = require('crypto').randomBytes(32).toString('hex');

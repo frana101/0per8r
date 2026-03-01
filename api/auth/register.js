@@ -64,6 +64,9 @@ module.exports = async (req, res) => {
       streak: 0
     };
 
+    const TRIAL_DAYS = 14;
+    const trialEndsAt = Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000;
+
     const { data: user, error } = await supabase.from('users').insert({
       email: emailLower,
       username: usernameTrimmed,
@@ -71,12 +74,18 @@ module.exports = async (req, res) => {
       preferences,
       session_token: sessionToken,
       session_expiry: sessionExpiry,
+      trial_ends_at: trialEndsAt,
+      subscription_status: 'trial',
       created_at: new Date().toISOString()
-    }).select('id, email, username, preferences, created_at').single();
+    }).select('id, email, username, preferences, trial_ends_at, subscription_status, created_at').single();
 
     if (error) {
       console.error('Supabase insert error:', error);
-      return res.status(500).json({ error: error.message || 'Registration failed' });
+      const msg = error.message || 'Registration failed';
+      if (msg.includes('trial_ends_at') || msg.includes('subscription_status') || (msg.includes('column') && msg.includes('does not exist'))) {
+        return res.status(500).json({ error: 'Database missing trial columns. Run the ALTER statements in supabase-schema.sql in Supabase SQL Editor.' });
+      }
+      return res.status(500).json({ error: msg });
     }
 
     return res.status(200).json({

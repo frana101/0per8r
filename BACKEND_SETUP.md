@@ -49,9 +49,57 @@ const API_BASE = 'https://0per8r.vercel.app';
 
 Replace with your actual Vercel deployment URL (e.g. `https://your-project.vercel.app`). If you deploy this repo to Vercel, the default URL is usually `https://0per8r.vercel.app` or similar.
 
+## 6. Stripe (trial + paid subscription)
+
+If you use the trial/subscription flow, do the following.
+
+### Database
+
+If `users` already existed before trial columns were added, run in Supabase SQL Editor (see comments at bottom of `supabase-schema.sql`):
+
+```sql
+ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_ends_at BIGINT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT DEFAULT 'trial';
+```
+
+### Vercel env
+
+In Vercel → Project → Settings → Environment Variables, add:
+
+- `STRIPE_WEBHOOK_SECRET` = signing secret from Stripe (see below)
+
+(You already need `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` for the webhook.)
+
+### Stripe Dashboard
+
+1. **Payment link**  
+   Create a Payment Link in Stripe (Products → Payment Links) and copy the URL.
+
+2. **Webhook**  
+   - Developers → Webhooks → Add endpoint  
+   - URL: `https://<your-vercel-host>/api/webhooks/stripe`  
+   - Event: `checkout.session.completed`  
+   - Copy the **Signing secret** and set it in Vercel as `STRIPE_WEBHOOK_SECRET`.
+
+3. **Same email**  
+   Users must use the **same email** in the app and at Stripe Checkout so the webhook can mark their account as paid.
+
+### App
+
+In `app.js`, set your Stripe Checkout URL:
+
+```javascript
+const STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/...';  // paste your Payment Link here
+```
+
+When login returns “trial ended” (402), the app shows “Subscribe to continue” and opens this link.
+
+---
+
 ## API Endpoints
 
-- `POST /api/auth/register` – Create account
-- `POST /api/auth/login` – Sign in
+- `POST /api/auth/register` – Create account (starts 14-day trial)
+- `POST /api/auth/login` – Sign in (402 if trial ended and not paid)
 - `GET /api/user?token=xxx` – Get user data
 - `POST /api/user` – Update user preferences (body: `{ token, ...preferences }`)
+- `POST /api/webhooks/stripe` – Stripe webhook (do not call manually)
