@@ -1384,7 +1384,7 @@ function getApiBase() {
 const API_BASE = getApiBase();
 
 // PASTE YOUR STRIPE PAYMENT LINK HERE (from Stripe Dashboard > Payment Links). Example: 'https://buy.stripe.com/xxxxx'
-const STRIPE_CHECKOUT_URL = '';
+const STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/bJe5kEb9kfynb6dfcE2ZO00';
 
 // Authentication Functions
 function checkAuthentication() {
@@ -1841,6 +1841,10 @@ window.handleSignup = async function() {
       initializeEventListeners();
       updateUI();
       try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
+      return;
+    }
+    if (res.status === 401) {
+      showAuthError('Backend returned 401. Turn off Vercel Deployment Protection (Settings → Deployment Protection) so the API can be reached.', true);
       return;
     }
     const isServerConfigError = res.status === 500 || (data.error && (data.error.includes('configuration') || data.error.includes('Server configuration')));

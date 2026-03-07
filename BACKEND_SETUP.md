@@ -35,6 +35,8 @@ The app now stores user data on a backend so users can sign in from any device.
 
 Your API will be at `https://your-project.vercel.app/api/...`
 
+**If signup/login returns 401:** Your project may have **Deployment Protection** on. In Vercel → Project → **Settings** → **Deployment Protection**, turn it off (or set to "Only Preview deployments") so the API can be called without auth.
+
 ### Option B: Deploy only the API folder
 
 Create a separate Vercel project with the `api` folder and `vercel.json`, add the env vars above.
