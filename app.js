@@ -180,7 +180,14 @@ async function preloadSounds() {
   // HTML5 Audio loads automatically when needed
 }
 
-// Load state - sync from localStorage, optionally fetch from API if backend session exists
+// Per-user storage key - when logged in, each account has separate preferences
+function getStorageKeys() {
+  const user = state.currentUser || localStorage.getItem('0per8r_currentUser') || '';
+  const suffix = user ? '_' + user : '';
+  return { stateKey: '0per8r_state' + suffix, longTermKey: '0per8r_longterm' + suffix };
+}
+
+// Load state - sync from localStorage (per-user when logged in), fetch from API if backend session exists
 async function loadState() {
   try {
     const token = localStorage.getItem('0per8r_sessionToken');
@@ -190,15 +197,18 @@ async function loadState() {
         if (res.ok) {
           const data = await res.json();
           const prefs = (data.user && data.user.preferences) || {};
-          if (prefs.mission !== undefined) state.mission = prefs.mission;
-          if (prefs.goal !== undefined) state.goal = prefs.goal;
-          if (prefs.task !== undefined) state.task = prefs.task;
-          if (prefs.allowSites) state.allowSites = prefs.allowSites;
-          if (prefs.allowApps) state.allowApps = prefs.allowApps;
-          if (prefs.googleAlwaysAllowed !== undefined) state.googleAlwaysAllowed = prefs.googleAlwaysAllowed;
-          if (prefs.soundscape) state.soundscape = { ...state.soundscape, ...prefs.soundscape };
-          if (prefs.soundscapeEnabled !== undefined) state.soundscapeEnabled = prefs.soundscapeEnabled;
-          if (prefs.streak !== undefined) state.streak = prefs.streak;
+          // Full overwrite - empty arrays and strings must replace old data
+          state.mission = prefs.mission !== undefined ? prefs.mission : '';
+          state.goal = prefs.goal !== undefined ? prefs.goal : '';
+          state.task = prefs.task !== undefined ? prefs.task : '';
+          state.allowSites = Array.isArray(prefs.allowSites) ? prefs.allowSites : [];
+          state.allowApps = Array.isArray(prefs.allowApps) ? prefs.allowApps : [];
+          state.googleAlwaysAllowed = prefs.googleAlwaysAllowed !== undefined ? prefs.googleAlwaysAllowed : true;
+          if (prefs.soundscape && typeof prefs.soundscape === 'object') {
+            state.soundscape = { ...state.soundscape, ...prefs.soundscape };
+          }
+          state.soundscapeEnabled = prefs.soundscapeEnabled !== undefined ? prefs.soundscapeEnabled : true;
+          state.streak = prefs.streak !== undefined ? prefs.streak : 0;
           applyLoadedState();
           return;
         }
@@ -214,11 +224,15 @@ async function loadState() {
 }
 
 function loadStateFromLocal() {
-  const longTermData = JSON.parse(localStorage.getItem('0per8r_longterm') || '{}');
+  const keys = getStorageKeys();
+  // When logged in, use only per-user keys (no fallback to global - avoids leaking other accounts' data)
+  const longTermRaw = keys.longTermKey.includes('_') ? localStorage.getItem(keys.longTermKey) : (localStorage.getItem(keys.longTermKey) || localStorage.getItem('0per8r_longterm'));
+  const longTermData = JSON.parse(longTermRaw || '{}');
   if (longTermData.mission) state.mission = longTermData.mission;
   if (longTermData.goal) state.goal = longTermData.goal;
   if (longTermData.needleMover) state.task = longTermData.needleMover;
-  const saved = JSON.parse(localStorage.getItem('focusOS_state') || '{}');
+  const savedRaw = keys.stateKey.includes('_') ? localStorage.getItem(keys.stateKey) : (localStorage.getItem(keys.stateKey) || localStorage.getItem('focusOS_state'));
+  const saved = JSON.parse(savedRaw || '{}');
   if (!longTermData.mission) state.mission = saved.mission || '';
   if (!longTermData.goal) state.goal = saved.goal || '';
   if (!longTermData.needleMover) {
@@ -229,8 +243,8 @@ function loadStateFromLocal() {
       state.task = saved.task || '';
     }
   }
-  state.allowSites = saved.allowSites || [];
-  state.allowApps = saved.allowApps || [];
+  state.allowSites = Array.isArray(saved.allowSites) ? saved.allowSites : [];
+  state.allowApps = Array.isArray(saved.allowApps) ? saved.allowApps : [];
   state.googleAlwaysAllowed = saved.googleAlwaysAllowed !== undefined ? saved.googleAlwaysAllowed : true;
   const allowedSounds = ['rain', 'ocean', 'fire', 'wind', 'forest', 'cafe', 'cityscape'];
   if (saved.soundscape) {
@@ -250,7 +264,7 @@ function applyLoadedState() {
 
 let saveToServerTimeout = null;
 
-// Save state - local + sync to backend when logged in
+// Save state - local (per-user when logged in) + sync to backend when logged in
 function saveState() {
   const payload = {
     mission: state.mission,
@@ -263,9 +277,10 @@ function saveState() {
     soundscapeEnabled: state.soundscapeEnabled,
     streak: state.streak
   };
-  localStorage.setItem('focusOS_state', JSON.stringify(payload));
+  const keys = getStorageKeys();
+  localStorage.setItem(keys.stateKey, JSON.stringify(payload));
   const longTermData = { mission: state.mission, goal: state.goal, needleMover: state.task };
-  localStorage.setItem('0per8r_longterm', JSON.stringify(longTermData));
+  localStorage.setItem(keys.longTermKey, JSON.stringify(longTermData));
 
   const token = localStorage.getItem('0per8r_sessionToken');
   if (token) {
@@ -1573,18 +1588,20 @@ function createSessionFromApi(token, expiry, user) {
   state.currentUser = user.username;
 }
 
-// Apply preferences from API user object to state
+// Apply preferences from API user object to state - full overwrite for clean per-account state
 function applyPreferencesToState(prefs) {
   if (!prefs || typeof prefs !== 'object') return;
-  if (prefs.mission !== undefined) state.mission = prefs.mission;
-  if (prefs.goal !== undefined) state.goal = prefs.goal;
-  if (prefs.task !== undefined) state.task = prefs.task;
-  if (prefs.allowSites) state.allowSites = prefs.allowSites;
-  if (prefs.allowApps) state.allowApps = prefs.allowApps;
-  if (prefs.googleAlwaysAllowed !== undefined) state.googleAlwaysAllowed = prefs.googleAlwaysAllowed;
-  if (prefs.soundscape) state.soundscape = { ...state.soundscape, ...prefs.soundscape };
-  if (prefs.soundscapeEnabled !== undefined) state.soundscapeEnabled = prefs.soundscapeEnabled;
-  if (prefs.streak !== undefined) state.streak = prefs.streak;
+  state.mission = prefs.mission !== undefined ? prefs.mission : '';
+  state.goal = prefs.goal !== undefined ? prefs.goal : '';
+  state.task = prefs.task !== undefined ? prefs.task : '';
+  state.allowSites = Array.isArray(prefs.allowSites) ? prefs.allowSites : [];
+  state.allowApps = Array.isArray(prefs.allowApps) ? prefs.allowApps : [];
+  state.googleAlwaysAllowed = prefs.googleAlwaysAllowed !== undefined ? prefs.googleAlwaysAllowed : true;
+  if (prefs.soundscape && typeof prefs.soundscape === 'object') {
+    state.soundscape = { ...state.soundscape, ...prefs.soundscape };
+  }
+  state.soundscapeEnabled = prefs.soundscapeEnabled !== undefined ? prefs.soundscapeEnabled : true;
+  state.streak = prefs.streak !== undefined ? prefs.streak : 0;
 }
 
 function clearSession() {
@@ -1722,6 +1739,7 @@ window.handleLogin = async function() {
       createSessionFromApi(data.token, data.expiry, data.user);
       showPhase('dashboard');
       applyPreferencesToState(data.user && data.user.preferences);
+      saveState(); // Persist to per-user localStorage immediately so each account stays separate
       await loadState();
       initializeEventListeners();
       updateUI();
@@ -1837,6 +1855,7 @@ window.handleSignup = async function() {
       createSessionFromApi(data.token, data.expiry, data.user);
       showPhase('dashboard');
       applyPreferencesToState(data.user && data.user.preferences);
+      saveState(); // Persist to per-user localStorage immediately so each account stays separate
       await loadState();
       initializeEventListeners();
       updateUI();
