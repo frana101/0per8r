@@ -80,10 +80,13 @@ module.exports = async (req, res) => {
     }).select('id, email, username, preferences, trial_ends_at, subscription_status, created_at').single();
 
     if (error) {
-      console.error('Supabase insert error:', error);
-      const msg = error.message || 'Registration failed';
+      console.error('Supabase insert error (full):', JSON.stringify(error));
+      const msg = (error.message || error.error_description || error.details || '').trim() || 'Registration failed';
       if (msg.includes('trial_ends_at') || msg.includes('subscription_status') || (msg.includes('column') && msg.includes('does not exist'))) {
         return res.status(500).json({ error: 'Database missing trial columns. Run the ALTER statements in supabase-schema.sql in Supabase SQL Editor.' });
+      }
+      if (!error.message || error.message === '') {
+        return res.status(500).json({ error: 'Supabase insert failed (empty error). Use service_role key in Vercel, and disable RLS on users table or add an INSERT policy.' });
       }
       return res.status(500).json({ error: msg });
     }
