@@ -1750,6 +1750,26 @@ window.handleLogin = async function() {
       showSubscriptionRequired(data.message || data.error);
       return;
     }
+    // 401 "Account not found" from API - user may exist only in local storage (signup fell back to local when API was down)
+    if (res.status === 401) {
+      const userData = getUserData(usernameOrEmail);
+      if (userData) {
+        const passwordHash = hashPassword(password);
+        const usersByEmail = JSON.parse(localStorage.getItem('0per8r_users_by_email') || '{}');
+        const username = usersByEmail[usernameOrEmail.toLowerCase()] || usernameOrEmail;
+        if (userData.passwordHash === passwordHash) {
+          createSession(username);
+          showPhase('dashboard');
+          await loadState();
+          initializeEventListeners();
+          updateUI();
+          try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
+          return;
+        }
+      }
+      showAuthError(data.error || 'Login failed');
+      return;
+    }
     const isServerConfigError = res.status === 500 || (data.error && (data.error.includes('configuration') || data.error.includes('Server configuration')));
     if (isServerConfigError) {
       const userData = getUserData(usernameOrEmail);
