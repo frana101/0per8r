@@ -29,8 +29,8 @@ The app now stores user data on a backend so users can sign in from any device.
 1. Push this repo to GitHub (if not already)
 2. Go to [vercel.com](https://vercel.com) → Import your repo
 3. Add Environment Variables:
-   - `SUPABASE_URL` = your Project URL
-   - `SUPABASE_SERVICE_KEY` = your service_role key
+   - `SUPABASE_URL` = **Project URL** from Supabase **Settings → API** — must look like `https://YOUR_REF.supabase.co` (not `supabase.com`, not the dashboard)
+   - `SUPABASE_SERVICE_KEY` = your **service_role** key (not anon)
 4. Deploy
 
 Your API will be at `https://your-project.vercel.app/api/...`

@@ -4,6 +4,7 @@
 // Add env var: STRIPE_WEBHOOK_SECRET (from Stripe webhook signing secret)
 const { createClient } = require('@supabase/supabase-js');
 const Stripe = require('stripe');
+const { assertSupabaseProjectUrl } = require('../lib/supabaseEnv');
 
 function getRawBody(req) {
   return new Promise((resolve, reject) => {
@@ -25,6 +26,11 @@ module.exports = async (req, res) => {
 
   if (!secret || !supabaseUrl || !supabaseKey) {
     console.error('Missing STRIPE_WEBHOOK_SECRET or Supabase env');
+    return res.status(500).end();
+  }
+  const urlCheck = assertSupabaseProjectUrl(supabaseUrl);
+  if (!urlCheck.ok) {
+    console.error(urlCheck.error);
     return res.status(500).end();
   }
 

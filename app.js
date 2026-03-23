@@ -72,6 +72,7 @@ async function initApp() {
   console.log('Initializing app...');
   console.log('Document ready state:', document.readyState);
   console.log('Body exists:', !!document.body);
+  initApiBaseDebug();
   
   // Show that we're loading
   if (document.body) {
@@ -1397,6 +1398,15 @@ function getApiBase() {
   return url.startsWith('http') ? url : 'https://' + url;
 }
 const API_BASE = getApiBase();
+
+/** Shows which URL sign up / login use (must be your Vercel app, NOT supabase.com) */
+function initApiBaseDebug() {
+  console.log('[0per8r] API_BASE =', API_BASE);
+  const el = document.getElementById('api-base-debug');
+  if (el) {
+    el.textContent = 'Backend: ' + API_BASE;
+  }
+}
 
 // PASTE YOUR STRIPE PAYMENT LINK HERE (from Stripe Dashboard > Payment Links). Example: 'https://buy.stripe.com/xxxxx'
 const STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/bJe5kEb9kfynb6dfcE2ZO00';

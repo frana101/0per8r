@@ -1,6 +1,7 @@
 // GET /api/user?token=xxx - Get user data
 // POST /api/user - Update user preferences (body: { token, ...preferences })
 const { createClient } = require('@supabase/supabase-js');
+const { assertSupabaseProjectUrl } = require('./lib/supabaseEnv');
 
 async function getUserByToken(supabase, token) {
   const { data, error } = await supabase
@@ -27,6 +28,10 @@ module.exports = async (req, res) => {
   const key = process.env.SUPABASE_SERVICE_KEY;
   if (!url || !key) {
     return res.status(500).json({ error: 'Server configuration error' });
+  }
+  const urlCheck = assertSupabaseProjectUrl(url);
+  if (!urlCheck.ok) {
+    return res.status(500).json({ error: urlCheck.error });
   }
 
   const supabase = createClient(url, key);

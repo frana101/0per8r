@@ -1,6 +1,7 @@
 // POST /api/auth/register - Create new user account
 const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcryptjs');
+const { assertSupabaseProjectUrl } = require('../lib/supabaseEnv');
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -20,6 +21,10 @@ module.exports = async (req, res) => {
   if (!url || !key) {
     console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY');
     return res.status(500).json({ error: 'Server configuration error' });
+  }
+  const urlCheck = assertSupabaseProjectUrl(url);
+  if (!urlCheck.ok) {
+    return res.status(500).json({ error: urlCheck.error });
   }
 
   try {
@@ -81,7 +86,11 @@ module.exports = async (req, res) => {
 
     if (error) {
       console.error('Supabase insert error (full):', JSON.stringify(error));
-      const msg = (error.message || error.error_description || error.details || '').trim() || 'Registration failed';
+      let raw = (error.message || error.error_description || error.details || '').trim();
+      if (raw.includes('<!DOCTYPE') || raw.includes('Looking for something')) {
+        raw = 'SUPABASE_URL is wrong — use https://xxxxx.supabase.co from Supabase Settings → API, not the website URL.';
+      }
+      const msg = raw || 'Registration failed';
       if (msg.includes('trial_ends_at') || msg.includes('subscription_status') || (msg.includes('column') && msg.includes('does not exist'))) {
         return res.status(500).json({ error: 'Database missing trial columns. Run the ALTER statements in supabase-schema.sql in Supabase SQL Editor.' });
       }

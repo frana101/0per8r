@@ -1,6 +1,7 @@
 // POST /api/auth/login - Sign in user
 const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcryptjs');
+const { assertSupabaseProjectUrl } = require('../lib/supabaseEnv');
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -19,6 +20,10 @@ module.exports = async (req, res) => {
   const key = process.env.SUPABASE_SERVICE_KEY;
   if (!url || !key) {
     return res.status(500).json({ error: 'Server configuration error' });
+  }
+  const urlCheck = assertSupabaseProjectUrl(url);
+  if (!urlCheck.ok) {
+    return res.status(500).json({ error: urlCheck.error });
   }
 
   try {

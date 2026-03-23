@@ -1312,6 +1312,15 @@ body {
   margin: 0;
 }
 
+.auth-api-debug {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.35);
+  font-family: var(--mono);
+  margin: 10px 0 0;
+  word-break: break-all;
+  line-height: 1.3;
+}
+
 /* Password Modal */
 .password-modal {
   position: fixed;
