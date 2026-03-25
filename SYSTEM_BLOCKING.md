@@ -31,12 +31,21 @@ When you end a session (complete or emergency exit), the app automatically:
 - Removes all blocking entries
 - Everything returns to normal
 
-## If the App Crashes
+## If the App Crashes or You Force Quit
+
+Focus mode sets a **system HTTP/HTTPS proxy** (and sometimes a PAC URL) to `127.0.0.1`. If the app is **force quit**, that setting can stay on while nothing is listening → **browsers show ERR_PROXY** and sites stay blocked.
+
+**Fix:**
+
+1. Open 0per8r again — after a few seconds you may get **“Network still in blocking mode”** → click **Clear now** (Mac password) to remove the proxy.
+2. Or run **`node fix_network_proxy_gui.js`** from the app folder (GUI password prompt).
+3. Or double-click **`CLEAR_MACOS_NETWORK.command`** in the app folder (same script).
+
+## If the App Crashes (hosts only)
 
 If the app crashes before restoring the hosts file:
-- The app will automatically check and restore on next startup
-- Your original hosts file is safely backed up
-- You can manually restore by running: `sudo cp /etc/hosts.backup /etc/hosts` (if needed)
+- Your original hosts file may be backed up
+- You can manually restore hosts with `fix_hosts_gui.js` or the hosts backup path the app used
 
 ## What Sites Are Blocked?
 

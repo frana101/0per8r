@@ -1247,7 +1247,7 @@ function showPasswordPrompt(message, attempts = 1) {
       if (userData && userData.passwordHash) {
         passwordOk = hashPassword(password) === userData.passwordHash;
       } else {
-        // Logged in via backend only — no local password hash; verify with API
+        // No local hash yet (e.g. API-only session): verify online and save hash for offline exit
         try {
           const res = await fetch(`${API_BASE}/api/auth/login`, {
             method: 'POST',
@@ -1256,6 +1256,7 @@ function showPasswordPrompt(message, attempts = 1) {
           });
           if (res.ok) {
             passwordOk = true;
+            mergePasswordHashIntoUser(currentUser, (userData && userData.email) || '', password);
           } else if (res.status === 401) {
             const currentAttempt = attemptCount + 1;
             alert(`Incorrect ACCOUNT password. Please try again. (Attempt ${currentAttempt} of ${maxAttempts})`);
@@ -1270,10 +1271,18 @@ function showPasswordPrompt(message, attempts = 1) {
             return;
           }
         } catch (e) {
-          alert('Could not reach the server to verify your password. Check your connection and try again.');
-          input.value = '';
-          input.focus();
-          return;
+          const usersRetry = JSON.parse(localStorage.getItem('0per8r_users') || '{}');
+          const ud2 = usersRetry[currentUser];
+          if (ud2 && ud2.passwordHash && hashPassword(password) === ud2.passwordHash) {
+            passwordOk = true;
+          } else {
+            alert(
+              'Could not reach the server to verify your password. If blocking broke your network, run CLEAR_MACOS_NETWORK.command or fix_network_proxy_gui.js from the app folder. After you log in once while online, your password is saved locally for offline exit.'
+            );
+            input.value = '';
+            input.focus();
+            return;
+          }
         }
       }
       
@@ -1466,6 +1475,34 @@ function saveUserData(username, email, passwordHash, verified = true, verificati
   // Also store by email for lookup
   const usersByEmail = JSON.parse(localStorage.getItem('0per8r_users_by_email') || '{}');
   usersByEmail[email.toLowerCase()] = username;
+  localStorage.setItem('0per8r_users', JSON.stringify(users));
+  localStorage.setItem('0per8r_users_by_email', JSON.stringify(usersByEmail));
+}
+
+/**
+ * Store a local password hash after API login/signup so exit/quit verification works offline
+ * (e.g. broken proxy / ERR_PROXY when the server cannot be reached).
+ */
+function mergePasswordHashIntoUser(username, email, plainPassword) {
+  if (!username || !plainPassword) return;
+  const hash = hashPassword(plainPassword);
+  const users = JSON.parse(localStorage.getItem('0per8r_users') || '{}');
+  const usersByEmail = JSON.parse(localStorage.getItem('0per8r_users_by_email') || '{}');
+  const prev = users[username] || {};
+  const emailNorm =
+    email && typeof email === 'string' && email.includes('@')
+      ? email.trim().toLowerCase()
+      : prev.email || '';
+  users[username] = {
+    ...prev,
+    email: prev.email || emailNorm,
+    passwordHash: hash,
+    verified: prev.verified !== false,
+    createdAt: prev.createdAt || new Date().toISOString()
+  };
+  if (emailNorm && emailNorm.includes('@')) {
+    usersByEmail[emailNorm] = username;
+  }
   localStorage.setItem('0per8r_users', JSON.stringify(users));
   localStorage.setItem('0per8r_users_by_email', JSON.stringify(usersByEmail));
 }
@@ -1734,6 +1771,10 @@ window.handleLogin = async function() {
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       createSessionFromApi(data.token, data.expiry, data.user);
+      const u = data.user;
+      if (u && u.username) {
+        mergePasswordHashIntoUser(u.username, u.email || usernameOrEmail, password);
+      }
       showPhase('dashboard');
       applyPreferencesToState(data.user && data.user.preferences);
       saveState(); // Persist to per-user localStorage immediately so each account stays separate
@@ -1866,6 +1907,10 @@ window.handleSignup = async function() {
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       createSessionFromApi(data.token, data.expiry, data.user);
+      const u = data.user;
+      if (u && u.username) {
+        mergePasswordHashIntoUser(u.username, u.email || email, password);
+      }
       showPhase('dashboard');
       applyPreferencesToState(data.user && data.user.preferences);
       saveState(); // Persist to per-user localStorage immediately so each account stays separate

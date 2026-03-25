@@ -4,10 +4,27 @@
  * Run with: node fix_hosts_gui.js
  */
 
-const sudo = require('sudo-prompt');
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
+const { spawnSync } = require('child_process');
+
+/** Escape a string for use inside an AppleScript double-quoted literal. */
+function appleScriptEscape(str) {
+  return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/** Run a shell command with GUI admin prompt (Node 24–safe; avoids sudo-prompt / util.isObject). */
+function runShellWithAdminPrivileges(shellOneLiner) {
+  const inner = appleScriptEscape(shellOneLiner);
+  const appleScript = `do shell script "bash -lc " & quoted form of "${inner}" with administrator privileges`;
+  const r = spawnSync('osascript', ['-e', appleScript], { stdio: 'inherit' });
+  if (r.error) throw r.error;
+  if (r.status !== 0 && r.status !== null) {
+    const err = new Error(`osascript exited with code ${r.status}`);
+    err.code = r.status;
+    throw err;
+  }
+}
 
 const hostsPath = '/etc/hosts';
 
@@ -92,43 +109,46 @@ console.log(`Found ${removedCount} blocking entries to remove...`);
 const tempPath = path.join(__dirname, 'hosts_cleaned.tmp');
 fs.writeFileSync(tempPath, cleanedContent);
 
-// Use sudo-prompt to copy temp file to /etc/hosts
-const options = {
-  name: '0per8r Hosts Restore',
-  icns: '/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/AlertStopIcon.icns',
-};
-
 const command = `cp "${tempPath}" "${hostsPath}" && rm "${tempPath}" && dscacheutil -flushcache && killall -HUP mDNSResponder`;
 
 console.log('📝 Requesting admin privileges (GUI password dialog will appear)...\n');
 
-sudo.exec(command, options, (error, stdout, stderr) => {
-  // Clean up temp file even if command failed
-  try {
-    if (fs.existsSync(tempPath)) {
-      fs.unlinkSync(tempPath);
-    }
-  } catch (e) {
-    // Ignore cleanup errors
+let error;
+try {
+  runShellWithAdminPrivileges(command);
+} catch (e) {
+  error = e;
+}
+
+// Clean up temp file even if command failed
+try {
+  if (fs.existsSync(tempPath)) {
+    fs.unlinkSync(tempPath);
   }
-  
-  if (error) {
-    console.error('❌ Error:', error.message);
-    if (error.message.includes('did not grant permission') || error.message.includes('cancelled')) {
-      console.error('\n⚠️  Password prompt was cancelled or permission denied.');
-      console.error('Please try again and enter your admin password when prompted.');
-    } else {
-      console.error('\n⚠️  Could not restore hosts file. You may need admin privileges.');
-    }
-    process.exit(1);
+} catch (e) {
+  // Ignore cleanup errors
+}
+
+if (error) {
+  console.error('❌ Error:', error.message);
+  if (
+    String(error.message).includes('(-128)') ||
+    error.code === 1 ||
+    error.message.includes('cancelled')
+  ) {
+    console.error('\n⚠️  Password prompt was cancelled or permission denied.');
+    console.error('Please try again and enter your admin password when prompted.');
   } else {
-    console.log('✅ Hosts file restored successfully!');
-    console.log(`✅ Removed ${removedCount} blocking entries`);
-    console.log('✅ DNS cache flushed');
-    console.log('\n✅ DONE! Amazon and all other sites should work now.');
-    process.exit(0);
+    console.error('\n⚠️  Could not restore hosts file. You may need admin privileges.');
   }
-});
+  process.exit(1);
+}
+
+console.log('✅ Hosts file restored successfully!');
+console.log(`✅ Removed ${removedCount} blocking entries`);
+console.log('✅ DNS cache flushed');
+console.log('\n✅ DONE! Amazon and all other sites should work now.');
+process.exit(0);
 
 
 

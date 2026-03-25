@@ -1,6 +1,6 @@
 {
   "name": "0per8r",
-  "version": "1.4.2",
+  "version": "1.4.4",
   "description": "0per8r - Execution Lock System",
   "main": "main.js",
   "scripts": {
@@ -51,7 +51,7 @@
     },
     "mac": {
       "category": "public.app-category.productivity",
-      "icon": "build/icon.icns",
+      "icon": "build/icon.png",
       "target": [
         {
           "target": "dmg",
@@ -65,7 +65,7 @@
       "hardenedRuntime": false
     },
     "win": {
-      "icon": "build/icon.png",
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",

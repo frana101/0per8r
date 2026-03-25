@@ -1,7 +1,11 @@
 const { app, BrowserWindow, ipcMain, session, dialog, shell } = require('electron');
 const path = require('path');
 // REMOVED: activeWin - using AppleScript instead (works in built apps)
-const sudo = require('sudo-prompt');
+// On macOS use osascript-based elevation (Node 24–safe). Other platforms keep sudo-prompt.
+const sudo =
+  process.platform === 'darwin'
+    ? require('./macos-admin-sudo.js')
+    : require('sudo-prompt');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
@@ -144,12 +148,17 @@ function safeError(...args) {
 // No need for a list - everything is blocked by default
 
 function createWindow() {
+  const windowIcon =
+    process.platform === 'win32'
+      ? path.join(__dirname, 'build', 'icon.ico')
+      : path.join(__dirname, 'build', 'icon.png');
   mainWindow = new BrowserWindow({
     width: 1600,
     height: 1000,
     minWidth: 1200,
     minHeight: 800,
     backgroundColor: '#0a0a0f',
+    icon: fs.existsSync(windowIcon) ? windowIcon : undefined,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -2528,6 +2537,167 @@ echo "Restore complete - all websites unblocked"
   });
 }
 
+/** Remove 0per8r blocking lines from hosts content (shared logic for Windows restore). */
+function filterHostsBlockingLines(content) {
+  const blockedDomains = [
+    'instagram', 'telegram', 'youtube', 'facebook', 'twitter', 'reddit', 'tiktok', 'snapchat',
+    'discord', 'netflix', 'spotify', 'amazon', 'steam', 'x.com', 't.co', 'linkedin',
+    'pinterest', 'twitch', 'whatsapp', 'wechat', 'hulu', 'disney', 'hbo', 'vimeo',
+    'dailymotion', 'crunchyroll', 'epicgames', 'roblox', 'minecraft', 'battle.net',
+    'playstation', 'xbox', 'cnn', 'bbc', 'nytimes', 'buzzfeed', 'vice', 'tmz', 'people',
+    'eonline', 'ebay', 'etsy', 'aliexpress', '9gag', 'imgur', 'giphy', 'gfycat',
+    'vine', 'tumblr', 'flickr', 'deviantart', 'apple.com', 'fb.com', 'instagram.net',
+    'tiktokcdn.com', 'redd.it', 'old.reddit.com', 'pinimg.com', 'discord.gg',
+    'discordapp.com', 'ttvnw.net', 'nflxext.com', 'nflximg.net', 'disneyplus.com',
+    'disney-plus.net', 'hbomax.com', 'primevideo.com', 'amazonvideo.com', 'amazon.co.uk', 'amazon.de'
+  ];
+  const lines = content.split(/\r?\n/);
+  const out = [];
+  for (const line of lines) {
+    const lineLower = line.toLowerCase();
+    if (
+      lineLower.includes('0per8r') ||
+      lineLower.includes('blocked distracting') ||
+      lineLower.includes('# blocked')
+    ) {
+      continue;
+    }
+    if (line.trim().startsWith('127.0.0.1')) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length > 1) {
+        const domain = parts[1].toLowerCase();
+        const domainClean = domain.replace(/^www\./, '').replace(/^m\./, '');
+        if (blockedDomains.some((b) => domainClean.includes(b))) {
+          continue;
+        }
+      }
+    }
+    out.push(line);
+  }
+  return out.join('\r\n');
+}
+
+/** Windows: restore WinHTTP proxy + hosts (called on quit / stop session). */
+function restoreWindowsHostsForQuit() {
+  return new Promise((resolve, reject) => {
+    initializeAppDataPath();
+    const options = { name: '0per8r' };
+
+    if (hostsBackupPath && fs.existsSync(hostsBackupPath)) {
+      const cmd = `copy /Y "${hostsBackupPath}" "${hostsOriginalPath}" && del "${hostsBackupPath}"`;
+      sudo.exec(cmd, options, (error) => {
+        if (error) {
+          safeError('Failed to restore Windows hosts from backup:', error);
+          reject(error);
+        } else {
+          safeLog('✅ Windows hosts restored from backup');
+          resolve();
+        }
+      });
+      return;
+    }
+
+    let content = '';
+    try {
+      if (fs.existsSync(hostsOriginalPath)) {
+        content = fs.readFileSync(hostsOriginalPath, 'utf8');
+      }
+    } catch (e) {
+      safeError('Could not read Windows hosts file:', e);
+      reject(e);
+      return;
+    }
+
+    const cleaned = filterHostsBlockingLines(content);
+    const tempPath = path.join(initializeAppDataPath(), 'hosts_restore.temp');
+    try {
+      fs.writeFileSync(tempPath, cleaned);
+    } catch (e) {
+      reject(e);
+      return;
+    }
+
+    const copyCmd = `copy /Y "${tempPath}" "${hostsOriginalPath}" && del "${tempPath}"`;
+    sudo.exec(copyCmd, options, (error) => {
+      try {
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+      } catch (_) {}
+      if (error) {
+        safeError('Failed to write cleaned Windows hosts:', error);
+        reject(error);
+      } else {
+        safeLog('✅ Windows hosts cleaned (blocking lines removed)');
+        resolve();
+      }
+    });
+  });
+}
+
+function restoreWindowsBlockingPromise() {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') {
+      resolve();
+      return;
+    }
+
+    initializeAppDataPath();
+    safeLog('🧹 Restoring Windows blocking (proxy + hosts)...');
+
+    if (blockingProxyServer) {
+      blockingProxyServer.close(() => {
+        safeLog('Blocking proxy server stopped');
+      });
+      blockingProxyServer = null;
+    }
+    if (pacServer) {
+      pacServer.close(() => {
+        safeLog('PAC HTTP server stopped');
+      });
+      pacServer = null;
+    }
+
+    const pacFilePath = path.join(initializeAppDataPath(), 'focusos_proxy.pac');
+    try {
+      if (fs.existsSync(pacFilePath)) {
+        fs.unlinkSync(pacFilePath);
+        safeLog('PAC file removed');
+      }
+    } catch (e) {
+      safeError('Failed to remove PAC file:', e);
+    }
+
+    const options = { name: '0per8r' };
+    const resetCmd = 'netsh winhttp reset proxy';
+
+    sudo.exec(resetCmd, options, (proxyErr, proxyStdout) => {
+      if (proxyErr) {
+        safeError('Failed to reset Windows proxy:', proxyErr);
+      } else {
+        safeLog('✅ Windows WinHTTP proxy reset');
+        if (proxyStdout) safeLog(proxyStdout.toString());
+      }
+
+      restoreWindowsHostsForQuit()
+        .then(() => {
+          hostsModified = false;
+          try {
+            require('child_process').exec('ipconfig /flushdns', () => {});
+          } catch (_) {}
+          safeLog('✅ Windows blocking restore finished');
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('hosts-blocking-success', {
+              message: '✅ All websites have been unblocked. You can now browse normally.'
+            });
+          }
+          resolve();
+        })
+        .catch(() => {
+          resolve();
+        });
+    });
+  });
+}
+
 // Promise-based version of restoreCombinedBlocking
 function restoreCombinedBlockingPromise() {
   return new Promise((resolve, reject) => {
@@ -3227,7 +3397,7 @@ function flushDNSCache() {
     };
 
     // Flush DNS cache on macOS - more aggressive approach
-    // Note: sudo-prompt handles sudo, so don't include "sudo" in the command
+    // Note: macOS elevation uses osascript (see macos-admin-sudo.js); don't prefix "sudo"
     const command = 'dscacheutil -flushcache; killall -HUP mDNSResponder; dscacheutil -flushcache; killall -HUP mDNSResponder';
     
     sudo.exec(command, options, (error, stdout, stderr) => {
@@ -3546,11 +3716,85 @@ app.whenReady().then(() => {
       createWindow();
     }
   });
-  
-  // DISABLED: No longer restoring hosts file on startup to prevent password prompts
-  // Users can manually restore using provided scripts if needed
-  safeLog('🔍 Startup hosts file restore disabled to prevent password prompts');
+
+  // After force quit, system proxy may still point at 127.0.0.1:3128 → ERR_PROXY in browser & app
+  setTimeout(() => promptRestoreIfStaleSystemProxy(), 3500);
 });
+
+/**
+ * If macOS still has 0per8r blocking proxy enabled but the app was force quit, offer one-click restore.
+ */
+function promptRestoreIfStaleSystemProxy() {
+  if (process.platform !== 'darwin') return;
+  if (isLocked) return;
+
+  exec('networksetup -listallnetworkservices', (err, stdout) => {
+    if (err) return;
+    const unsupported = ['Thunderbolt Bridge', 'PPPoE', 'Bluetooth', 'FireWire'];
+    const services = stdout
+      .toString()
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(
+        (line) =>
+          line &&
+          !line.includes('*') &&
+          !line.includes('denotes') &&
+          !unsupported.some((u) => line.includes(u))
+      );
+    if (services.length === 0) return;
+
+    let pending = 0;
+    let stale = false;
+    const check = (out) => {
+      const t = (out || '').toString();
+      if (t.includes('Enabled: Yes') && t.includes('127.0.0.1') && t.includes('3128')) stale = true;
+      if (t.includes('Enabled: Yes') && t.includes('127.0.0.1') && t.includes('proxy.pac')) stale = true;
+    };
+
+    services.forEach((service) => {
+      const s = service.replace(/"/g, '\\"');
+      pending += 3;
+      exec(`networksetup -getwebproxy "${s}"`, (e, out) => {
+        check(out);
+        if (--pending === 0) finish();
+      });
+      exec(`networksetup -getsecurewebproxy "${s}"`, (e, out) => {
+        check(out);
+        if (--pending === 0) finish();
+      });
+      exec(`networksetup -getautoproxyurl "${s}"`, (e, out) => {
+        const t = (out || '').toString();
+        if (t.includes('Enabled: Yes') && t.includes('127.0.0.1')) stale = true;
+        if (--pending === 0) finish();
+      });
+    });
+
+    function finish() {
+      if (!stale) return;
+      safeLog('⚠️ Stale system proxy detected (likely after force quit). Offering restore.');
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      dialog
+        .showMessageBox(mainWindow, {
+          type: 'warning',
+          title: 'Network still in blocking mode',
+          message:
+            'macOS is still using 0per8r’s proxy (127.0.0.1). That causes ERR_PROXY until it is cleared.',
+          detail:
+            'Click “Clear now” to remove it (your Mac may ask for your password). Or run fix_network_proxy_gui.js from the project folder.',
+          buttons: ['Clear now', 'Later'],
+          defaultId: 0,
+          cancelId: 1
+        })
+        .then(({ response }) => {
+          if (response === 0) {
+            restoreCombinedBlocking();
+          }
+        })
+        .catch(() => {});
+    }
+  });
+}
 
 // Auto-updater configuration
 function initializeAutoUpdater() {
