@@ -713,6 +713,8 @@ async function monitorActiveApp() {
       'smss',          // Session Manager
       'taskhostw',     // Task host
       'svchost',       // Service host
+      'task manager',  // Escape hatch to end stuck processes
+      'taskmgr',
       '0per8r',        // This app
       'electron',      // Electron
       '0per8r.exe',    // This app (exe)
@@ -728,6 +730,8 @@ async function monitorActiveApp() {
       'windowserver',  // Window Server
       'dock',          // Dock
       'finder',        // Finder
+      'activity monitor', // Always allow — escape hatch if you need to force quit
+      'terminal',      // Allow kill commands if needed
       '0per8r',        // This app
       'electron',      // Electron
       'electron helper', // Electron helper

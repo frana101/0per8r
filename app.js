@@ -1,5 +1,4 @@
 // 0per8r - Dashboard System
-// CONFIG: paste your Stripe Payment Link by searching for STRIPE_CHECKOUT_URL in this file
 const state = {
   mission: '',
   goal: '',
@@ -1227,13 +1226,12 @@ function showPasswordPrompt(message, attempts = 1) {
       input.onkeydown = null;
     };
     
-    const handleConfirm = () => {
+    const handleConfirm = async () => {
       const password = input.value;
       if (!password) {
         return; // Don't resolve if password is empty
       }
       
-      // Get current user
       const currentUser = localStorage.getItem('0per8r_currentUser');
       if (!currentUser) {
         alert('No user found. Please log in again.');
@@ -1242,33 +1240,55 @@ function showPasswordPrompt(message, attempts = 1) {
         return;
       }
       
-      // Get user data
       const users = JSON.parse(localStorage.getItem('0per8r_users') || '{}');
       const userData = users[currentUser];
-      if (!userData) {
-        alert('User data not found. Please log in again.');
-        cleanup();
-        resolve(false);
-        return;
+      
+      let passwordOk = false;
+      if (userData && userData.passwordHash) {
+        passwordOk = hashPassword(password) === userData.passwordHash;
+      } else {
+        // Logged in via backend only — no local password hash; verify with API
+        try {
+          const res = await fetch(`${API_BASE}/api/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ emailOrUsername: currentUser, password })
+          });
+          if (res.ok) {
+            passwordOk = true;
+          } else if (res.status === 401) {
+            const currentAttempt = attemptCount + 1;
+            alert(`Incorrect ACCOUNT password. Please try again. (Attempt ${currentAttempt} of ${maxAttempts})`);
+            input.value = '';
+            input.focus();
+            return;
+          } else {
+            const data = await res.json().catch(() => ({}));
+            alert(data.error || 'Could not verify password. Try again.');
+            input.value = '';
+            input.focus();
+            return;
+          }
+        } catch (e) {
+          alert('Could not reach the server to verify your password. Check your connection and try again.');
+          input.value = '';
+          input.focus();
+          return;
+        }
       }
       
-      // Verify password
-      const enteredHash = hashPassword(password);
-      if (enteredHash === userData.passwordHash) {
+      if (passwordOk) {
         attemptCount++;
         if (attemptCount >= maxAttempts) {
-          // All attempts successful
           cleanup();
           resolve(true);
         } else {
-          // Need more attempts
           const remaining = maxAttempts - attemptCount;
           messageEl.textContent = `${initialMessage}\n\nAttempt ${attemptCount} of ${maxAttempts} successful. Enter your ACCOUNT password ${remaining} more time${remaining > 1 ? 's' : ''} (Attempt ${attemptCount + 1} of ${maxAttempts}):`;
           input.value = '';
           input.focus();
         }
       } else {
-        // Wrong password - don't reset, just show error
         const currentAttempt = attemptCount + 1;
         alert(`Incorrect ACCOUNT password. Please try again. (Attempt ${currentAttempt} of ${maxAttempts})`);
         input.value = '';
@@ -1397,9 +1417,6 @@ function getApiBase() {
   return url.startsWith('http') ? url : 'https://' + url;
 }
 const API_BASE = getApiBase();
-
-// PASTE YOUR STRIPE PAYMENT LINK HERE (from Stripe Dashboard > Payment Links). Example: 'https://buy.stripe.com/xxxxx'
-const STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/bJe5kEb9kfynb6dfcE2ZO00';
 
 // Authentication Functions
 function checkAuthentication() {
@@ -1696,26 +1713,6 @@ function showAuthError(message, isSignup = false) {
   }
 }
 
-function showSubscriptionRequired(message) {
-  const errorEl = document.getElementById('auth-error');
-  if (!errorEl) return;
-  errorEl.style.display = 'block';
-  errorEl.innerHTML = message || 'Your free trial has ended.';
-  if (typeof STRIPE_CHECKOUT_URL === 'string' && STRIPE_CHECKOUT_URL.trim()) {
-    const link = document.createElement('a');
-    link.href = STRIPE_CHECKOUT_URL.trim();
-    link.target = '_blank';
-    link.rel = 'noopener';
-    link.textContent = 'Subscribe to continue';
-    link.style.display = 'block';
-    link.style.marginTop = '10px';
-    link.style.color = '#4ade80';
-    link.style.textDecoration = 'underline';
-    errorEl.appendChild(document.createElement('br'));
-    errorEl.appendChild(link);
-  }
-}
-
 // Make handleLogin global so inline handlers can access it
 window.handleLogin = async function() {
   const usernameEl = document.getElementById('login-username');
@@ -1744,10 +1741,6 @@ window.handleLogin = async function() {
       initializeEventListeners();
       updateUI();
       try { initAudioContext(); } catch (e) { console.warn('Audio init failed:', e); }
-      return;
-    }
-    if (res.status === 402 && (data.code === 'subscription_required' || data.message)) {
-      showSubscriptionRequired(data.message || data.error);
       return;
     }
     // 401 "Account not found" from API - user may exist only in local storage (signup fell back to local when API was down)

@@ -43,65 +43,23 @@ Create a separate Vercel project with the `api` folder and `vercel.json`, add th
 
 ## 5. Update the App with Your API URL
 
-In `app.js`, find the line:
+In `app.js`, set `getApiBase()` to your Vercel URL (e.g. `https://0per8r-complete1.vercel.app`).
 
-```javascript
-const API_BASE = 'https://0per8r.vercel.app';
-```
+## 6. Free trials & Stripe (later)
 
-Replace with your actual Vercel deployment URL (e.g. `https://your-project.vercel.app`). If you deploy this repo to Vercel, the default URL is usually `https://0per8r.vercel.app` or similar.
+There is **no** trial or paywall in the app or API right now: any valid account can sign in.
 
-## 6. Stripe (trial + paid subscription)
+When you want time-limited trials and/or paid access:
 
-If you use the trial/subscription flow, do the following.
-
-### Database
-
-If `users` already existed before trial columns were added, run in Supabase SQL Editor (see comments at bottom of `supabase-schema.sql`):
-
-```sql
-ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_ends_at BIGINT;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT DEFAULT 'trial';
-```
-
-### Vercel env
-
-In Vercel → Project → Settings → Environment Variables, add:
-
-- `STRIPE_WEBHOOK_SECRET` = signing secret from Stripe (see below)
-
-(You already need `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` for the webhook.)
-
-### Stripe Dashboard
-
-1. **Payment link**  
-   Create a Payment Link in Stripe (Products → Payment Links) and copy the URL.
-
-2. **Webhook**  
-   - Developers → Webhooks → Add endpoint  
-   - URL: `https://<your-vercel-host>/api/webhooks/stripe`  
-   - Event: `checkout.session.completed`  
-   - Copy the **Signing secret** and set it in Vercel as `STRIPE_WEBHOOK_SECRET`.
-
-3. **Same email**  
-   Users must use the **same email** in the app and at Stripe Checkout so the webhook can mark their account as paid.
-
-### App
-
-In `app.js`, set your Stripe Checkout URL:
-
-```javascript
-const STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/...';  // paste your Payment Link here
-```
-
-When login returns “trial ended” (402), the app shows “Subscribe to continue” and opens this link.
+1. Run **`supabase-future-subscription.sql`** in the Supabase SQL Editor (adds `trial_ends_at` and `subscription_status`).
+2. Re-implement checks in **`api/auth/login.js`** (e.g. allow login only if trial not expired or `subscription_status = 'active'`), set trial on **`api/auth/register.js`**, and wire **`api/webhooks/stripe.js`** to mark users paid after Stripe checkout. Add **`STRIPE_WEBHOOK_SECRET`** in Vercel and a payment link + 402 handling in the app as needed.
 
 ---
 
 ## API Endpoints
 
-- `POST /api/auth/register` – Create account (starts 14-day trial)
-- `POST /api/auth/login` – Sign in (402 if trial ended and not paid)
+- `POST /api/auth/register` – Create account
+- `POST /api/auth/login` – Sign in
 - `GET /api/user?token=xxx` – Get user data
 - `POST /api/user` – Update user preferences (body: `{ token, ...preferences }`)
-- `POST /api/webhooks/stripe` – Stripe webhook (do not call manually)
+- `POST /api/webhooks/stripe` – Stripe webhook stub (signature verified if `STRIPE_WEBHOOK_SECRET` is set; no subscription DB updates until you build that flow)
