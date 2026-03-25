@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Local deploy / packaging staging (not used by Vercel from Git)
+DEPLOY_READY/
+
 # Build outputs
 dist/
 *.dmg
