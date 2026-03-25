@@ -1392,7 +1392,8 @@ function handleCompletion() {
 
 // Backend API - set to your Vercel deployment URL (see BACKEND_SETUP.md). Use https://
 function getApiBase() {
-  const url = 'https://0per8r-complete1-h9xxzfaf3-faiyaads-projects.vercel.app';
+  // Must match Vercel project → Deployments → Domains (production), e.g. 0per8r-complete1.vercel.app
+  const url = 'https://0per8r-complete1.vercel.app';
   return url.startsWith('http') ? url : 'https://' + url;
 }
 const API_BASE = getApiBase();
