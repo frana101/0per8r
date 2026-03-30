@@ -155,6 +155,7 @@ body {
   background: var(--accent);
   transition: left 0.3s ease;
   z-index: 0;
+  pointer-events: none;
 }
 
 .session-start-btn:hover::before {
@@ -242,6 +243,7 @@ body {
   background: linear-gradient(90deg, transparent, var(--accent), transparent);
   opacity: 0;
   transition: opacity 0.3s ease;
+  pointer-events: none;
 }
 
 .bento-box:hover {
@@ -278,6 +280,18 @@ body {
   gap: 10px;
   overflow: hidden;
   min-height: 0;
+  position: relative;
+  z-index: 1;
+}
+
+/* Ensure form fields stay above decorative layers (Windows hit-testing) */
+.phase input,
+.phase textarea,
+.phase select,
+.phase [contenteditable='true'] {
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
 }
 
 /* Task Hierarchy */
@@ -1047,6 +1061,7 @@ body {
   background: var(--accent);
   transition: left 0.3s ease;
   z-index: 0;
+  pointer-events: none;
 }
 
 .finish-btn:hover::before {
@@ -1320,10 +1335,16 @@ body {
   width: 100%;
   height: 100%;
   background: rgba(0, 0, 0, 0.85);
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: center;
   z-index: 10000;
+  pointer-events: none;
+}
+
+.password-modal.password-modal--open {
+  display: flex;
+  pointer-events: auto;
 }
 
 .password-modal-content {

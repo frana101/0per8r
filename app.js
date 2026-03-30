@@ -26,6 +26,9 @@ const state = {
   currentUser: null
 };
 
+/** Prevents double-invoke when timer hits 0 */
+let sessionCompletionInProgress = false;
+
 // Audio system - Using HTML5 Audio instead of Web Audio API to avoid crashes
 const audioElements = {}; // Store HTML5 Audio elements
 
@@ -1197,6 +1200,19 @@ function startTimer() {
 // Show password prompt modal (with optional multiple attempts)
 function showPasswordPrompt(message, attempts = 1) {
   return new Promise((resolve) => {
+    (async () => {
+    // Fullscreen + modal breaks keyboard focus on Windows; exit fullscreen before any prompt
+    if (window.electronAPI && typeof window.electronAPI.exitFullscreenUnconditional === 'function') {
+      try {
+        await window.electronAPI.exitFullscreenUnconditional();
+      } catch (e) {
+        console.warn('exitFullscreenUnconditional:', e);
+      }
+      const isWin =
+        typeof window.electronAPI.getPlatform === 'function' &&
+        window.electronAPI.getPlatform() === 'win32';
+      await new Promise((r) => setTimeout(r, isWin ? 100 : 0));
+    }
     const modal = document.getElementById('password-modal');
     const messageEl = document.getElementById('password-modal-message');
     const input = document.getElementById('password-input');
@@ -1215,11 +1231,19 @@ function showPasswordPrompt(message, attempts = 1) {
     
     messageEl.textContent = maxAttempts > 1 ? `${initialMessage}\n\nEnter your ACCOUNT password (Attempt 1 of ${maxAttempts}):` : initialMessage;
     input.value = '';
-    modal.style.display = 'flex';
+    modal.classList.add('password-modal--open');
+    modal.setAttribute('aria-hidden', 'false');
     input.focus();
-    
+    setTimeout(() => {
+      try {
+        input.focus();
+        input.select();
+      } catch (_) {}
+    }, 50);
+
     const cleanup = () => {
-      modal.style.display = 'none';
+      modal.classList.remove('password-modal--open');
+      modal.setAttribute('aria-hidden', 'true');
       input.value = '';
       confirmBtn.onclick = null;
       cancelBtn.onclick = null;
@@ -1322,12 +1346,27 @@ function showPasswordPrompt(message, attempts = 1) {
         handleCancel();
       }
     };
+    })().catch((err) => {
+      console.error('showPasswordPrompt:', err);
+      resolve(false);
+    });
   });
 }
 
 // Handle emergency exit
 async function handleEmergencyExit() {
   try {
+    if (window.electronAPI && typeof window.electronAPI.exitFullscreenUnconditional === 'function') {
+      try {
+        await window.electronAPI.exitFullscreenUnconditional();
+      } catch (e) {
+        console.warn(e);
+      }
+      const isWin =
+        typeof window.electronAPI.getPlatform === 'function' &&
+        window.electronAPI.getPlatform() === 'win32';
+      if (isWin) await new Promise((r) => setTimeout(r, 80));
+    }
     // Show confirmation dialog
     const confirmed = confirm('⚠️ Emergency Exit\n\nThis session will be marked as incomplete and your streak will be reset.\n\nAre you sure you want to exit?');
     
@@ -1384,19 +1423,36 @@ async function handleEmergencyExit() {
   }
 }
 
-// Complete session
+// Complete session (timer finished — must always reach completion UI)
 async function completeSession() {
-  state.isLocked = false;
-  
-  // Stop all sounds
-  Object.keys(audioSources).forEach(sound => stopSound(sound));
-  
-  if (window.electronAPI) {
-    await window.electronAPI.stopSession();
-    window.electronAPI.setLocked(false);
-    window.electronAPI.exitFullscreen();
+  if (sessionCompletionInProgress) return;
+  sessionCompletionInProgress = true;
+  try {
+    state.isLocked = false;
+
+    try {
+      Object.keys(audioElements).forEach((sound) => stopSound(sound));
+    } catch (e) {
+      console.warn('stopSound:', e);
+    }
+
+    if (window.electronAPI) {
+      try {
+        await window.electronAPI.stopSession();
+      } catch (e) {
+        console.error('stopSession failed:', e);
+      }
+      try {
+        window.electronAPI.setLocked(false);
+        window.electronAPI.exitFullscreen();
+      } catch (e) {
+        console.warn('setLocked/exitFullscreen:', e);
+      }
+    }
+    showPhase('completion');
+  } finally {
+    sessionCompletionInProgress = false;
   }
-  showPhase('completion');
 }
 
 // Handle completion

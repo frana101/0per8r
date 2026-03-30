@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setLocked: (locked) => ipcRenderer.send('set-locked', locked),
   requestFullscreen: () => ipcRenderer.send('request-fullscreen'),
   exitFullscreen: () => ipcRenderer.send('exit-fullscreen'),
+  /** Leave fullscreen even while focus-locked (password modal / emergency exit). */
+  exitFullscreenUnconditional: () => ipcRenderer.invoke('exit-fullscreen-unconditional'),
   onBreakAttempt: (callback) => {
     ipcRenderer.on('break-attempt', (event, data) => callback(data));
   },

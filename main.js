@@ -202,6 +202,25 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
+    // Windows: ensure the renderer receives focus so inputs/contenteditable work reliably.
+    if (process.platform === 'win32') {
+      try {
+        mainWindow.setFocusable(true);
+        setTimeout(() => {
+          if (!mainWindow || mainWindow.isDestroyed()) return;
+          try {
+            mainWindow.focus();
+            if (typeof mainWindow.webContents.focus === 'function') {
+              mainWindow.webContents.focus();
+            }
+          } catch (e) {
+            safeError('Windows focus:', e);
+          }
+        }, 100);
+      } catch (e) {
+        safeError('Windows focus init:', e);
+      }
+    }
   });
 
   // Block navigation to unauthorized sites
@@ -3550,8 +3569,11 @@ function _removedIpcPlaceholder() {
   void ipcMain; // Reference to ensure ipcMain is in scope when registerIpcHandlers runs
 }
 
-// Disable hardware acceleration - MUST be before app.whenReady
-app.disableHardwareAcceleration();
+// Disabling GPU compositing helps some macOS setups but breaks keyboard/input & hit-testing
+// on many Windows machines (Chromium/Electron). Only disable off Windows.
+if (process.platform !== 'win32') {
+  app.disableHardwareAcceleration();
+}
 
 // (Duplicate ipcMain handlers removed - see registerIpcHandlers)
 /*
@@ -3651,18 +3673,33 @@ function registerIpcHandlers() {
       return { ok: false, error: error.message };
     }
   });
+  ipcMain.handle('exit-fullscreen-unconditional', async () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        mainWindow.setFullScreen(false);
+      } catch (e) {
+        safeError('exit-fullscreen-unconditional:', e);
+      }
+    }
+    return { ok: true };
+  });
   ipcMain.handle('stop-session', async () => {
     try {
       safeLog('🛑 Stop session called - restoring blocking...');
       isLocked = false;
       stopMonitoring();
-      safeLog('Restoring system-wide blocking (password prompt will appear)...');
-      restoreCombinedBlocking();
+      safeLog('Restoring system-wide blocking (async, may show UAC)...');
+      // Use promise-based restore so Windows gets proxy/hosts reset; do not await so UI can finish immediately
+      restoreCombinedBlockingPromise().catch((e) => safeError('Background restore failed:', e));
       restoreDoH();
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.setClosable(true);
         mainWindow.setMinimizable(true);
-        try { mainWindow.setFullScreen(false); } catch (e) { safeError('Error exiting fullscreen:', e); }
+        try {
+          mainWindow.setFullScreen(false);
+        } catch (e) {
+          safeError('Error exiting fullscreen:', e);
+        }
       }
       return { ok: true };
     } catch (error) {
