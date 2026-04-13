@@ -9,9 +9,10 @@ const sudo =
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const { exec } = require('child_process');
+const { exec, execFileSync } = require('child_process');
 const httpProxy = require('http-proxy');
 const net = require('net');
+const os = require('os');
 let autoUpdater = null; // Lazy-loaded after app ready
 
 let mainWindow = null;
@@ -69,9 +70,229 @@ function initializeAppDataPath() {
 let dohBackups = {}; // Store DoH settings backups
 let safariDNSBackups = {}; // Store Safari DNS settings
 let pacServer = null; // HTTP server for serving PAC file
+/** Latest PAC body served at /proxy.pac (updated each session so stale closure cannot serve old rules). */
+let pacContentServed = '';
 let blockingProxyServer = null; // Actual proxy server that blocks connections
 let proxyPort = 3128; // Port for the blocking proxy server
 let currentAllowedDomains = []; // Domains allowed through the proxy
+
+/** WinINET (HKCU) backup path — Chrome/Edge use this; WinHTTP alone does not affect most browsers. */
+function windowsInetBackupPath() {
+  return path.join(initializeAppDataPath(), 'windows_inet_backup.json');
+}
+
+function readWindowsRegValue(keyPath, valName) {
+  if (process.platform !== 'win32') return undefined;
+  try {
+    const { execSync } = require('child_process');
+    const out = execSync(`reg query "${keyPath}" /v "${valName}"`, {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 8000
+    });
+    if (valName === 'AutoConfigURL') {
+      const m = out.match(/AutoConfigURL\s+REG_SZ\s+(\S.*)/);
+      return m ? m[1].trim() : undefined;
+    }
+    if (valName === 'ProxyEnable') {
+      const m = out.match(/ProxyEnable\s+REG_DWORD\s+0x(\d+)/i);
+      return m ? parseInt(m[1], 16) : 0;
+    }
+    if (valName === 'ProxyServer') {
+      const m = out.match(/ProxyServer\s+REG_SZ\s+(\S.*)/);
+      return m ? m[1].trim() : undefined;
+    }
+  } catch (e) {
+    return undefined;
+  }
+  return undefined;
+}
+
+function backupWindowsInetSettings() {
+  if (process.platform !== 'win32') return;
+  try {
+    initializeAppDataPath();
+    const key = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
+    const backup = {
+      autoConfigURL: readWindowsRegValue(key, 'AutoConfigURL'),
+      proxyEnable: readWindowsRegValue(key, 'ProxyEnable'),
+      proxyServer: readWindowsRegValue(key, 'ProxyServer')
+    };
+    fs.writeFileSync(windowsInetBackupPath(), JSON.stringify(backup), 'utf8');
+    safeLog('Windows Internet Settings backup saved');
+  } catch (e) {
+    safeError('backupWindowsInetSettings:', e.message);
+  }
+}
+
+function restoreWindowsInetSettingsSync() {
+  if (process.platform !== 'win32') return;
+  const { execSync } = require('child_process');
+  const key = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
+  const run = (cmd) => {
+    try {
+      execSync(cmd, { windowsHide: true, timeout: 15000, stdio: 'pipe' });
+    } catch (e) {
+      /* reg delete often errors if value missing */
+    }
+  };
+  try {
+    initializeAppDataPath();
+    const p = windowsInetBackupPath();
+    if (fs.existsSync(p)) {
+      const backup = JSON.parse(fs.readFileSync(p, 'utf8'));
+      try {
+        fs.unlinkSync(p);
+      } catch (e) {
+        /* ignore */
+      }
+      if (backup.autoConfigURL != null && backup.autoConfigURL !== '') {
+        run(`reg add "${key}" /v AutoConfigURL /t REG_SZ /d "${String(backup.autoConfigURL).replace(/"/g, '\\"')}" /f`);
+      } else {
+        run(`reg delete "${key}" /v AutoConfigURL /f`);
+      }
+      const pe = typeof backup.proxyEnable === 'number' ? backup.proxyEnable : 0;
+      run(`reg add "${key}" /v ProxyEnable /t REG_DWORD /d ${pe} /f`);
+      if (backup.proxyServer != null && backup.proxyServer !== '') {
+        run(`reg add "${key}" /v ProxyServer /t REG_SZ /d "${String(backup.proxyServer).replace(/"/g, '\\"')}" /f`);
+      } else {
+        run(`reg delete "${key}" /v ProxyServer /f`);
+      }
+    } else {
+      run(`reg delete "${key}" /v AutoConfigURL /f`);
+      run(`reg add "${key}" /v ProxyEnable /t REG_DWORD /d 0 /f`);
+    }
+    refreshWinInetNotifySync();
+    safeLog('✅ Windows WinINET (user) proxy settings restored');
+  } catch (e) {
+    safeError('restoreWindowsInetSettingsSync:', e.message);
+  }
+}
+
+function refreshWinInetNotifySync() {
+  if (process.platform !== 'win32') return;
+  try {
+    const { execSync } = require('child_process');
+    const ps = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class WinInet {
+  [DllImport("wininet.dll", SetLastError = true)]
+  public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
+}
+"@
+[void][WinInet]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0)
+[void][WinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0)
+`;
+    const fp = path.join(initializeAppDataPath(), 'focus_refresh_inet.ps1');
+    fs.writeFileSync(fp, ps, 'utf8');
+    execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${fp}"`, {
+      windowsHide: true,
+      timeout: 20000,
+      stdio: 'pipe'
+    });
+    try {
+      fs.unlinkSync(fp);
+    } catch (e) {
+      /* ignore */
+    }
+  } catch (e) {
+    safeLog('refreshWinInetNotifySync:', e.message);
+  }
+}
+
+function applyWindowsInetAutoconfigSync(pacHttpUrl) {
+  if (process.platform !== 'win32') return;
+  const { execSync } = require('child_process');
+  const key = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
+  const escaped = String(pacHttpUrl).replace(/"/g, '\\"');
+  try {
+    execSync(`reg add "${key}" /v AutoConfigURL /t REG_SZ /d "${escaped}" /f`, {
+      windowsHide: true,
+      timeout: 15000,
+      stdio: 'pipe'
+    });
+    execSync(`reg add "${key}" /v ProxyEnable /t REG_DWORD /d 0 /f`, {
+      windowsHide: true,
+      timeout: 15000,
+      stdio: 'pipe'
+    });
+    refreshWinInetNotifySync();
+    safeLog('✅ Windows WinINET AutoConfigURL applied (Chrome/Edge/system proxy)');
+  } catch (e) {
+    safeError('applyWindowsInetAutoconfigSync:', e.message);
+  }
+}
+
+/** WinHTTP `set proxy` does not support script-source; use advproxy JSON (see Microsoft netsh winhttp docs). */
+function writeWindowsWinHttpAdvproxyJsonFiles(pacHttpUrl) {
+  const dir = initializeAppDataPath();
+  const activePath = path.join(dir, 'winhttp_advproxy.json');
+  const clearPath = path.join(dir, 'winhttp_advproxy_clear.json');
+  const active = {
+    Proxy: 'http=127.0.0.1:3128;https=127.0.0.1:3128',
+    ProxyBypass: 'localhost;127.0.0.1;<local>',
+    AutoconfigUrl: pacHttpUrl,
+    AutoDetect: false
+  };
+  const clear = {
+    Proxy: '',
+    ProxyBypass: '',
+    AutoconfigUrl: '',
+    AutoDetect: false
+  };
+  fs.writeFileSync(activePath, JSON.stringify(active), 'utf8');
+  fs.writeFileSync(clearPath, JSON.stringify(clear), 'utf8');
+  return { activePath, clearPath };
+}
+
+function writeWindowsApplyWinHttpProxyBat() {
+  const dir = initializeAppDataPath();
+  const batPath = path.join(dir, 'apply_winhttp_proxy.bat');
+  const bat = `@echo off
+cd /d "%~dp0"
+netsh winhttp set advproxy setting-scope=user settings-file="%~dp0winhttp_advproxy.json"
+if errorlevel 1 goto fallback
+goto ok
+:fallback
+netsh winhttp set proxy proxy-server="http=127.0.0.1:3128;https=127.0.0.1:3128" bypass-list="localhost;127.0.0.1;<local>"
+if errorlevel 1 exit /b 1
+:ok
+exit /b 0
+`;
+  fs.writeFileSync(batPath, bat, 'utf8');
+  return batPath;
+}
+
+function writeWindowsRestoreWinHttpBat() {
+  const dir = initializeAppDataPath();
+  const batPath = path.join(dir, 'restore_winhttp_proxy.bat');
+  const bat = `@echo off
+cd /d "%~dp0"
+if exist "%~dp0winhttp_advproxy_clear.json" (
+  netsh winhttp set advproxy setting-scope=user settings-file="%~dp0winhttp_advproxy_clear.json"
+  if errorlevel 1 exit /b 1
+)
+netsh winhttp reset proxy
+if errorlevel 1 exit /b 1
+exit /b 0
+`;
+  fs.writeFileSync(batPath, bat, 'utf8');
+  return batPath;
+}
+
+/** Ensure clear JSON exists before session end restore (e.g. if setup never ran this boot). */
+function writeWindowsWinHttpClearOnlyJsonFile() {
+  const dir = initializeAppDataPath();
+  const clearPath = path.join(dir, 'winhttp_advproxy_clear.json');
+  fs.writeFileSync(
+    clearPath,
+    JSON.stringify({ Proxy: '', ProxyBypass: '', AutoconfigUrl: '', AutoDetect: false }),
+    'utf8'
+  );
+  return clearPath;
+}
 
 // Write log to file
 function writeLogToFile(message) {
@@ -471,98 +692,81 @@ function quitApp(appName) {
   }
 }
 
-// Force reload all browser tabs to ensure cached content is blocked
+// Force reload all browser tabs so existing tabs pick up new system proxy / PAC (shell -e multiline was unreliable).
 function reloadAllBrowserTabs() {
   if (process.platform !== 'darwin') return;
-  
-  const { exec } = require('child_process');
-  
-  // Reload Safari tabs
-  const safariScript = `
-    tell application "Safari"
-      if it is running then
-        repeat with w in windows
-          repeat with t in tabs of w
-            try
-              set URL of t to URL of t
-            end try
-          end repeat
-        end repeat
-      end if
-    end tell
-  `;
-  
-  exec(`osascript -e '${safariScript}'`, (error) => {
-    if (!error) {
-      safeLog('✅ Safari tabs reloaded');
-    }
-  });
-  
-  // Reload Chrome tabs (using Chrome's AppleScript support)
-  const chromeScript = `
-    tell application "Google Chrome"
-      if it is running then
-        repeat with w in windows
-          repeat with t in tabs of w
-            try
-              reload t
-            end try
-          end repeat
-        end repeat
-      end if
-    end tell
-  `;
-  
-  exec(`osascript -e '${chromeScript}'`, (error) => {
-    if (!error) {
-      safeLog('✅ Chrome tabs reloaded');
-    }
-  });
-  
-  // Reload Firefox tabs (Firefox doesn't have great AppleScript support, but we can try)
-  // Firefox requires different approach - we'll use keyboard shortcuts
-  // For now, just log that we attempted it
-  safeLog('Browser tabs reload initiated - all open tabs will make new requests through proxy');
-}
 
-// Quit all browsers to ensure proxy blocking takes effect on all connections
-function quitAllBrowsers(callback) {
-  if (process.platform !== 'darwin') {
-    if (callback) callback();
-    return;
-  }
-  
-  const browsers = ['Safari', 'Google Chrome', 'Chrome', 'Firefox', 'Microsoft Edge', 'Opera', 'Brave Browser'];
-  const { exec } = require('child_process');
-  let quitCount = 0;
-  let checkCount = 0;
-  const totalBrowsers = browsers.length;
-  
-  browsers.forEach(browser => {
-    // Try to quit browser directly (will fail silently if not running)
-    safeLog(`Quitting ${browser} to apply proxy blocking...`);
-    exec(`osascript -e 'tell application "${browser}" to quit'`, (error) => {
-      checkCount++;
-      if (!error) {
-        quitCount++;
-        safeLog(`✅ ${browser} quit successfully`);
-      }
-      
-      // When all browsers checked, call callback
-      if (checkCount === totalBrowsers) {
-        safeLog(`Quit ${quitCount} browser(s). Waiting for connections to close...`);
-        // Small delay to ensure connections are fully closed
-        setTimeout(() => {
-          if (callback) callback();
-        }, 1000);
-      }
-    });
+  initializeAppDataPath();
+  const { execFile } = require('child_process');
+  const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+  const runAppleScriptFile = (label, source) => {
+    const fp = path.join(initializeAppDataPath(), `0per8r-reload-${label}-${stamp}.applescript`);
+    try {
+      fs.writeFileSync(fp, source, 'utf8');
+      execFile('osascript', [fp], (err) => {
+        try {
+          fs.unlinkSync(fp);
+        } catch (e) {
+          /* ignore */
+        }
+        if (err) {
+          safeLog(`Tab reload ${label}:`, err.message);
+        } else {
+          safeLog(`✅ Tab reload: ${label}`);
+        }
+      });
+    } catch (e) {
+      safeError(`Tab reload write ${label}:`, e.message);
+    }
+  };
+
+  // Safari: hard reload via JS (bypasses stale in-memory cache better than set URL to URL)
+  runAppleScriptFile(
+    'safari',
+    `tell application "Safari"
+  if not (running) then return
+  repeat with w in windows
+    repeat with t in tabs of w
+      try
+        do JavaScript "location.reload(true)" in t
+      on error
+        try
+          set URL of t to URL of t
+        end try
+      end try
+    end repeat
+  end repeat
+end tell
+`
+  );
+
+  const chromiumReload = (appName) =>
+    `tell application "${appName}"
+  if not (running) then return
+  repeat with w in windows
+    repeat with t in tabs of w
+      try
+        reload t
+      end try
+    end repeat
+  end repeat
+end tell
+`;
+
+  [
+    'Google Chrome',
+    'Google Chrome Canary',
+    'Chromium',
+    'Microsoft Edge',
+    'Brave Browser',
+    'Opera',
+    'Arc'
+  ].forEach((appName) => {
+    runAppleScriptFile(appName.replace(/\s+/g, '_').toLowerCase(), chromiumReload(appName));
   });
-  
-  // If no browsers to check, call callback immediately
-  if (totalBrowsers === 0 && callback) {
-    callback();
-  }
+
+  safeLog('Browser tab reload scripts dispatched (existing tabs should re-fetch through proxy)');
 }
 
 // Get active app - WORKS WITH JUST ACCESSIBILITY PERMISSION (no Automation needed)
@@ -573,16 +777,35 @@ async function getActiveAppAppleScript() {
     const { exec } = require('child_process');
     
     if (process.platform === 'win32') {
-      // Windows: Use PowerShell to get foreground window process
-      const psScript = `Add-Type @\"using System;using System.Runtime.InteropServices;public class Win32{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern int GetWindowThreadProcessId(IntPtr hWnd,out uint ProcessId);}\"@;$hwnd=[Win32]::GetForegroundWindow();$pid=0;[Win32]::GetWindowThreadProcessId($hwnd,[ref]$pid);$proc=Get-Process -Id $pid -ErrorAction SilentlyContinue;if($proc){Write-Output $proc.ProcessName}`;
-      
-      exec(`powershell -Command "${psScript}"`, (error, stdout, stderr) => {
-        if (!error && stdout && stdout.trim()) {
-          resolve(stdout.trim());
-        } else {
-          reject(new Error('Could not get active app on Windows'));
+      // Windows: foreground process name — use -EncodedCommand (UTF-16LE) so cmd quoting never breaks the script
+      const psScript = [
+        'Add-Type @"',
+        'using System;',
+        'using System.Runtime.InteropServices;',
+        'public class Win32 {',
+        '  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();',
+        '  [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr hWnd, out uint ProcessId);',
+        '}',
+        '"@',
+        '$hwnd = [Win32]::GetForegroundWindow()',
+        '$fgPid = [uint32]0',
+        '[void][Win32]::GetWindowThreadProcessId($hwnd, [ref]$fgPid)',
+        '$proc = Get-Process -Id $fgPid -ErrorAction SilentlyContinue',
+        'if ($proc) { $proc.ProcessName }'
+      ].join('\n');
+      const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+      exec(
+        `powershell -NoProfile -EncodedCommand ${encoded}`,
+        { windowsHide: true, maxBuffer: 256 * 1024 },
+        (error, stdout, stderr) => {
+          if (!error && stdout && stdout.trim()) {
+            resolve(stdout.trim());
+          } else {
+            if (stderr && stderr.trim()) safeLog('getActiveApp Windows stderr:', stderr.trim());
+            reject(new Error('Could not get active app on Windows'));
+          }
         }
-      });
+      );
       return;
     }
     
@@ -773,10 +996,10 @@ async function monitorActiveApp() {
     const normalizedSystem = systemProcesses.map(s => s.toLowerCase().trim());
     const allAllowed = [...normalizedAllowed, ...normalizedSystem];
 
-    // Check if app is allowed - exact match only (simpler, more reliable)
-    const isAllowed = allAllowed.some((allowed) => {
-      return normalizedActive === allowed || normalizedActive.includes(allowed) || allowed.includes(normalizedActive);
-    });
+    // Allowed list: match process name (ignore .exe); no substring match — too loose
+    const stripExe = (s) => s.replace(/\.exe$/i, '');
+    const activeBase = stripExe(normalizedActive);
+    const isAllowed = allAllowed.some((allowed) => activeBase === stripExe(allowed));
 
     // If not allowed, KILL IT IMMEDIATELY
     if (!isAllowed) {
@@ -828,11 +1051,19 @@ async function monitorActiveApp() {
 }
 
 async function startMonitoring(apps, sites, allowGoogle = true) {
-  allowedApps = apps || [];
-  allowedSites = sites || [];
-  googleAlwaysAllowed = allowGoogle !== false; // Default to true
+  // Session lock is owned only by main (start/stop-session). Never clear this from renderer IPC.
   isLocked = true;
   monitoringPaused = false;
+
+  allowedApps = (apps || [])
+    .map((a) => {
+      if (typeof a === 'string') return a.toLowerCase().trim();
+      if (a && typeof a === 'object' && a.process) return String(a.process).toLowerCase().trim();
+      return '';
+    })
+    .filter(Boolean);
+  allowedSites = sites || [];
+  googleAlwaysAllowed = allowGoogle !== false; // Default to true
 
   safeLog('🔒 Starting focus session...');
   safeLog('Allowed apps:', allowedApps);
@@ -1011,7 +1242,7 @@ function setupWebRequestBlocking(allowList = []) {
     defaultSession.webRequest.onBeforeRequest(
       { 
         urls: ['http://*/*', 'https://*/*'],
-        types: ['mainFrame', 'subFrame', 'stylesheet', 'script', 'image', 'font', 'object', 'ping', 'cspReport', 'media']
+        types: ['mainFrame', 'subFrame', 'stylesheet', 'script', 'image', 'font', 'object', 'xhr', 'ping', 'cspReport', 'media', 'webSocket']
       },
       listener
     );
@@ -1025,7 +1256,7 @@ function setupWebRequestBlocking(allowList = []) {
       defaultSession.webRequest.onBeforeRequest(
         { 
           urls: ['http://*/*', 'https://*/*'],
-          types: ['mainFrame', 'subFrame']
+          types: ['mainFrame', 'subFrame', 'xhr', 'webSocket']
         },
         listener
       );
@@ -1096,16 +1327,15 @@ function setupHostsFileBlocking(allowList = []) {
 
 // Start blocking proxy server that actually intercepts and blocks connections
 function startBlockingProxy(allowedDomainsList) {
+  // Always refresh allowlist (module-level) so a reused server matches the latest session
+  currentAllowedDomains = (allowedDomainsList || []).map((d) => {
+    let domain = String(d).toLowerCase().replace(/^www\./, '');
+    return domain;
+  }).filter(Boolean);
   if (blockingProxyServer) {
-    safeLog('Blocking proxy server already running');
+    safeLog('Blocking proxy server already running — allowlist updated:', currentAllowedDomains.length, 'domains');
     return;
   }
-  
-  // Store allowed domains
-  currentAllowedDomains = allowedDomainsList.map(d => {
-    let domain = d.toLowerCase().replace(/^www\./, '');
-    return domain;
-  });
   
   // Helper to check if domain is allowed
   const isDomainAllowed = (hostname) => {
@@ -1243,30 +1473,34 @@ function startBlockingProxy(allowedDomainsList) {
 
 // Combined blocking setup - does EVERYTHING in ONE password prompt
 function setupCombinedBlocking(domainsToBlock, alwaysAllowed, allowList, normalizedAllow) {
+  // Proxy + PAC must allow BOTH google/fonts (when enabled) AND user allowlist — same as Electron webRequest
+  const normalizedUser = (normalizedAllow || []).map((d) => {
+    let x = String(d).toLowerCase().trim().replace(/^www\./, '');
+    return x.split('/')[0];
+  }).filter(Boolean);
+  const normalizedAlways = (alwaysAllowed || []).map((d) => {
+    let x = String(d).toLowerCase().trim().replace(/^www\./, '');
+    return x.split('/')[0];
+  }).filter(Boolean);
+  const mergedAllow = Array.from(new Set([...normalizedAlways, ...normalizedUser]));
+  safeLog('🚀 Starting blocking proxy server with merged allowlist:', mergedAllow.join(', ') || '(none — block all external)');
+
   // Start the blocking proxy server FIRST (before anything else)
-  // This ensures proxy is ready to intercept connections
-  safeLog('🚀 Starting blocking proxy server...');
-  startBlockingProxy(alwaysAllowed);
-  
+  startBlockingProxy(mergedAllow);
+
   // Verify proxy server is running
   if (!blockingProxyServer) {
     safeError('❌ CRITICAL: Blocking proxy server failed to start!');
     return;
   }
-  
+
   safeLog('✅ Blocking proxy server is running on port', proxyPort);
-  
-  // Note: Browsers will be quit AFTER proxy is fully configured (in success callback)
-  // This ensures when browsers reopen, proxy is active and all requests are intercepted
-  
+
   // Create PAC file first (no sudo needed) - use writable directory
   const pacFilePath = path.join(initializeAppDataPath(), 'focusos_proxy.pac');
-  
-  // Build PAC file content - point to our blocking proxy
-  const allowedDomains = alwaysAllowed.map(d => {
-    let domain = d.toLowerCase().replace(/^www\./, '');
-    return `"${domain}"`;
-  }).join(', ');
+
+  // PAC must match merged allowlist (was only alwaysAllowed before — broke user allowlist + looked like “blocking not working”)
+  const allowedDomains = mergedAllow.map((d) => `"${d}"`).join(', ');
   
   // PAC file that blocks ALL websites except explicitly allowed ones
   // Simple and effective: blocks ANY domain with a dot (all websites have dots)
@@ -1317,18 +1551,18 @@ function setupCombinedBlocking(domainsToBlock, alwaysAllowed, allowList, normali
 }`;
   
   try {
+    pacContentServed = pacFileContent;
     fs.writeFileSync(pacFilePath, pacFileContent);
     safeLog('PAC file created successfully');
   } catch (e) {
     safeError('Failed to create PAC file:', e);
     return;
   }
-  
+
   // Start HTTP server to serve PAC file (browsers respect HTTP PAC files better than file://)
   const pacPort = 8888;
   if (pacServer) {
-    // Server already running, just update content
-    safeLog('PAC HTTP server already running');
+    safeLog('PAC HTTP server already running — serving updated PAC');
   } else {
     pacServer = http.createServer((req, res) => {
       if (req.url === '/proxy.pac' || req.url === '/') {
@@ -1338,8 +1572,7 @@ function setupCombinedBlocking(domainsToBlock, alwaysAllowed, allowList, normali
           'Pragma': 'no-cache',
           'Expires': '0'
         });
-        res.end(pacFileContent);
-        safeLog('PAC file served via HTTP');
+        res.end(pacContentServed || '');
       } else {
         res.writeHead(404);
         res.end('Not found');
@@ -1507,21 +1740,19 @@ echo "Blocking setup complete"
         } else {
           hostsModified = true;
           safeLog('✅ System-wide blocking enabled - ALL websites blocked except allowed ones');
-          
-          // Force reload ALL browser tabs to clear cached content (ensures all tabs go through proxy)
-          // This makes all open tabs make new requests, which will be intercepted by the proxy
-          // Do this multiple times to catch any tabs that were opened during the delay
+
+          // Existing tabs keep old connections until reloaded — auto-reload only (browsers stay open for allowed sites).
           setTimeout(() => {
             reloadAllBrowserTabs();
-            // Reload again after a delay to catch any tabs opened in the meantime
-            setTimeout(() => {
-              reloadAllBrowserTabs();
-            }, 2000);
-          }, 3000); // Wait a moment for proxy to be fully active and PAC file to be applied
+            setTimeout(() => reloadAllBrowserTabs(), 2200);
+            setTimeout(() => reloadAllBrowserTabs(), 4500);
+            setTimeout(() => reloadAllBrowserTabs(), 7000);
+          }, 2000);
           
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('hosts-blocking-success', { 
-              message: `✅ System-wide blocking enabled! EVERY website is now blocked except google.com and your allowed sites. ALL network requests (including from already-open tabs) are intercepted and blocked immediately. All browser tabs will be reloaded to ensure blocking takes effect.`
+              message:
+                '✅ System-wide blocking is on. Open tabs are being auto-reloaded so new requests go through blocking — allowed sites still work; other sites should block after reload. Browsers stay open.'
             });
           }
         }
@@ -1669,15 +1900,20 @@ function setupWindowsBlocking(allowList = []) {
     domain = domain.replace(/^www\./, '');
     domain = domain.split('/')[0];
     return domain;
-  });
-  
-  // Always allow google.com
-  const alwaysAllowed = ['google.com', 'www.google.com', ...normalizedAllow];
+  }).filter(Boolean);
+
+  // PAC: block ALL hosts except Google (optional) + fonts + user allowlist — same policy as macOS / Electron webRequest
+  const alwaysAllowedSet = new Set();
+  if (googleAlwaysAllowed) {
+    ['google.com', 'www.google.com', 'fonts.googleapis.com', 'fonts.gstatic.com'].forEach((d) => alwaysAllowedSet.add(d));
+  }
+  normalizedAllow.forEach((d) => alwaysAllowedSet.add(d));
+  const alwaysAllowed = Array.from(alwaysAllowedSet);
   
   // Setup Windows proxy and hosts file
   setupWindowsProxy(alwaysAllowed)
     .then(() => {
-      return setupWindowsHostsFile(alwaysAllowed);
+      return setupWindowsHostsFile();
     })
     .then(() => {
       safeLog('✅ Windows system-wide blocking enabled');
@@ -1697,16 +1933,16 @@ function setupWindowsBlocking(allowList = []) {
     });
 }
 
-// Setup Windows proxy using netsh
+// Setup Windows proxy: local blocking proxy (must listen on 3128) + PAC over HTTP + WinHTTP + WinINET (Chrome/Edge).
 function setupWindowsProxy(alwaysAllowed) {
   return new Promise((resolve, reject) => {
-    // Create PAC file
-    const pacFilePath = path.join(initializeAppDataPath(), 'focusos_proxy.pac');
-    const allowedDomains = alwaysAllowed.map(d => {
-      let domain = d.toLowerCase().replace(/^www\./, '');
+    initializeAppDataPath();
+
+    const allowedDomains = alwaysAllowed.map((d) => {
+      let domain = String(d).toLowerCase().replace(/^www\./, '');
       return `"${domain}"`;
     }).join(', ');
-    
+
     const pacFileContent = `function FindProxyForURL(url, host) {
   host = host.toLowerCase();
   if (host === "localhost" || host === "127.0.0.1" || host.startsWith("192.168.") || host.startsWith("10.") || host.startsWith("172.")) {
@@ -1721,131 +1957,126 @@ function setupWindowsProxy(alwaysAllowed) {
   }
   return "PROXY 127.0.0.1:3128";
 }`;
-    
+
+    pacContentServed = pacFileContent;
+    const pacFilePath = path.join(initializeAppDataPath(), 'focusos_proxy.pac');
     try {
       fs.writeFileSync(pacFilePath, pacFileContent);
-      safeLog('Windows PAC file created');
+      safeLog('Windows PAC file written');
     } catch (e) {
       safeError('Failed to create PAC file:', e);
       reject(e);
       return;
     }
-    
-    // Convert path to Windows format and escape for command
-    const absolutePacPath = path.resolve(pacFilePath).replace(/\\/g, '\\\\');
-    const fileUrl = `file:///${absolutePacPath.replace(/\\/g, '/')}`;
-    
-    const options = {
-      name: '0per8r',
-    };
-    
-    // Show notification
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('hosts-blocking-prompt', {
-        message: 'A password prompt will appear. Please enter your admin password to enable system-wide website blocking.'
-      });
-      monitoringPaused = true;
-      const wasFullscreen = mainWindow.isFullScreen();
-      if (wasFullscreen) {
-        mainWindow.setFullScreen(false);
-      }
-      mainWindow.focus();
-      mainWindow.show();
+
+    const pacHttpUrl = 'http://127.0.0.1:8888/proxy.pac';
+
+    startBlockingProxy(alwaysAllowed);
+    if (!blockingProxyServer) {
+      safeError('❌ Blocking proxy failed to start on Windows');
+      reject(new Error('Blocking proxy failed'));
+      return;
     }
-    
-    setTimeout(() => {
-      // Set proxy using netsh (Windows)
-      // netsh winhttp set proxy proxy-server="127.0.0.1:3128" bypass-list="localhost;127.0.0.1;*.google.com"
-      // Or use PAC file: netsh winhttp set proxy proxy-server="http=127.0.0.1:3128" script-source="file:///C:/path/to/file.pac"
-      const command = `netsh winhttp set proxy proxy-server="http=127.0.0.1:3128" script-source="${fileUrl}"`;
-      
-      safeLog('Setting Windows proxy...');
-      sudo.exec(command, options, (error, stdout, stderr) => {
-        setTimeout(() => {
-          monitoringPaused = false;
-        }, 2000);
-        
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          const wasFullscreen = mainWindow.isFullScreen();
-          if (wasFullscreen) {
-            setTimeout(() => {
-              if (mainWindow && !mainWindow.isDestroyed() && isLocked) {
-                mainWindow.setFullScreen(true);
-              }
-            }, 1500);
-          }
+    safeLog('✅ Windows blocking proxy listening on 127.0.0.1:3128');
+
+    const options = { name: '0per8r' };
+
+    const runNetshAndWinInet = () => {
+      backupWindowsInetSettings();
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('hosts-blocking-prompt', {
+          message:
+            'A password prompt will appear. Please enter your admin password to enable system-wide website blocking (WinHTTP). Chrome/Edge also use your user proxy settings — those are applied without admin.'
+        });
+        monitoringPaused = true;
+        const wasFullscreen = mainWindow.isFullScreen();
+        if (wasFullscreen) {
+          mainWindow.setFullScreen(false);
         }
-        
-        if (error) {
-          safeError('Failed to set Windows proxy:', error);
-          reject(error);
-        } else {
-          safeLog('✅ Windows proxy configured');
+        mainWindow.focus();
+        mainWindow.show();
+      }
+
+      setTimeout(() => {
+        writeWindowsWinHttpAdvproxyJsonFiles(pacHttpUrl);
+        const batPath = writeWindowsApplyWinHttpProxyBat();
+        const command = `"${batPath}"`;
+        safeLog('Setting Windows WinHTTP (netsh advproxy or static proxy fallback)...');
+        sudo.exec(command, options, (error, stdout, stderr) => {
+          setTimeout(() => {
+            monitoringPaused = false;
+          }, 2000);
+
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            const wasFs = mainWindow.isFullScreen();
+            if (wasFs) {
+              setTimeout(() => {
+                if (mainWindow && !mainWindow.isDestroyed() && isLocked) {
+                  mainWindow.setFullScreen(true);
+                }
+              }, 1500);
+            }
+          }
+
+          if (error) {
+            safeError('Failed to set Windows WinHTTP proxy:', error);
+            try {
+              applyWindowsInetAutoconfigSync(pacHttpUrl);
+            } catch (e) {
+              safeError('WinINET fallback:', e);
+            }
+            reject(error);
+            return;
+          }
+          safeLog('✅ Windows WinHTTP configured');
+          try {
+            applyWindowsInetAutoconfigSync(pacHttpUrl);
+          } catch (e) {
+            safeError('WinINET apply:', e);
+          }
           resolve();
+        });
+      }, 1000);
+    };
+
+    if (!pacServer) {
+      pacServer = http.createServer((req, res) => {
+        if (req.url === '/proxy.pac' || req.url === '/') {
+          res.writeHead(200, {
+            'Content-Type': 'application/x-ns-proxy-autoconfig',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            Pragma: 'no-cache',
+            Expires: '0'
+          });
+          res.end(pacContentServed || '');
+        } else {
+          res.writeHead(404);
+          res.end('Not found');
         }
       });
-    }, 1000);
+      pacServer.listen(8888, '127.0.0.1', () => {
+        safeLog('✅ Windows PAC HTTP server on 8888');
+        runNetshAndWinInet();
+      });
+      pacServer.on('error', (e) => {
+        safeError('PAC server error:', e);
+        reject(e);
+      });
+    } else {
+      safeLog('PAC HTTP server already running — updated PAC body');
+      runNetshAndWinInet();
+    }
   });
 }
 
-// Setup Windows hosts file
-function setupWindowsHostsFile(alwaysAllowed) {
-  return new Promise((resolve, reject) => {
-    // Backup hosts file first
-    backupWindowsHostsFile()
-      .then(() => {
-        return readWindowsHostsFile();
-      })
-      .then(originalContent => {
-        // Build blocking entries - block common distracting sites
-        const blockedDomains = [
-          'facebook.com', 'www.facebook.com', 'fb.com',
-          'instagram.com', 'www.instagram.com',
-          'twitter.com', 'www.twitter.com', 'x.com', 'www.x.com',
-          'youtube.com', 'www.youtube.com', 'youtu.be',
-          'reddit.com', 'www.reddit.com',
-          'tiktok.com', 'www.tiktok.com',
-          'netflix.com', 'www.netflix.com',
-          'discord.com', 'www.discord.com', 'discord.gg',
-          'telegram.org', 'www.telegram.org', 'web.telegram.org'
-        ];
-        
-        // Remove domains that are in allow list
-        const domainsToBlock = blockedDomains.filter(domain => {
-          const cleanDomain = domain.replace(/^www\./, '').toLowerCase();
-          return !alwaysAllowed.some(allowed => {
-            const cleanAllowed = allowed.replace(/^www\./, '').toLowerCase();
-            return cleanDomain === cleanAllowed || cleanDomain.endsWith('.' + cleanAllowed);
-          });
-        });
-        
-        // Build new hosts file content
-        let newContent = originalContent.trim();
-        if (!newContent.endsWith('\n')) {
-          newContent += '\n';
-        }
-        newContent += '\n# 0per8r Blocking - Added automatically\n';
-        domainsToBlock.forEach(domain => {
-          newContent += `127.0.0.1\t${domain}\n`;
-        });
-        
-        return writeWindowsHostsFile(newContent);
-      })
-      .then(() => {
-        // Flush DNS cache on Windows
-        exec('ipconfig /flushdns', (err) => {
-          if (err) {
-            safeError('Failed to flush DNS cache:', err);
-          } else {
-            safeLog('DNS cache flushed');
-          }
-        });
-        resolve();
-      })
-      .catch(err => {
-        safeError('Failed to setup Windows hosts file:', err);
-        reject(err);
-      });
+// Setup Windows hosts file — legacy path only blocked a social list; real block-all is PAC + blocking proxy (matches Electron).
+function setupWindowsHostsFile() {
+  return new Promise((resolve) => {
+    safeLog(
+      'Windows: skipping hosts mutation — all sites use PAC → 127.0.0.1:3128 except allowed (same as macOS).'
+    );
+    resolve();
   });
 }
 
@@ -2323,9 +2554,16 @@ function setupProxyBlocking(domainsToBlock, alwaysAllowed) {
           handleProxyError(error, wasFullscreen);
         } else {
           safeLog('✅ PAC file configured - system-wide blocking active');
+          setTimeout(() => {
+            reloadAllBrowserTabs();
+            setTimeout(() => reloadAllBrowserTabs(), 2200);
+            setTimeout(() => reloadAllBrowserTabs(), 4500);
+            setTimeout(() => reloadAllBrowserTabs(), 7000);
+          }, 2000);
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('hosts-blocking-success', { 
-              message: `✅ System-wide blocking enabled! All websites are now blocked except google.com and your allowed sites. All browsers were closed - you can reopen them now and blocking will work immediately.` 
+              message:
+                '✅ System-wide blocking enabled. Open tabs will auto-reload so blocking applies; browsers stay open.'
             });
           }
         }
@@ -2660,7 +2898,10 @@ function restoreWindowsBlockingPromise() {
     }
 
     initializeAppDataPath();
-    safeLog('🧹 Restoring Windows blocking (proxy + hosts)...');
+    safeLog('🧹 Restoring Windows blocking (WinINET → servers → WinHTTP → hosts)...');
+
+    // 1) Restore Chrome/Edge/user “Internet Settings” first so browsers stop using our PAC
+    restoreWindowsInetSettingsSync();
 
     if (blockingProxyServer) {
       blockingProxyServer.close(() => {
@@ -2686,13 +2927,15 @@ function restoreWindowsBlockingPromise() {
     }
 
     const options = { name: '0per8r' };
-    const resetCmd = 'netsh winhttp reset proxy';
+    writeWindowsWinHttpClearOnlyJsonFile();
+    const restoreBatPath = writeWindowsRestoreWinHttpBat();
+    const resetCmd = `"${restoreBatPath}"`;
 
     sudo.exec(resetCmd, options, (proxyErr, proxyStdout) => {
       if (proxyErr) {
-        safeError('Failed to reset Windows proxy:', proxyErr);
+        safeError('Failed to reset Windows WinHTTP (advproxy clear + reset):', proxyErr);
       } else {
-        safeLog('✅ Windows WinHTTP proxy reset');
+        safeLog('✅ Windows WinHTTP cleared (advproxy) and reset');
         if (proxyStdout) safeLog(proxyStdout.toString());
       }
 
@@ -3641,6 +3884,95 @@ ipcMain.on('exit-fullscreen', () => {
 });
 
 */
+function readMacPlistBuddy(plistPath, key) {
+  try {
+    return execFileSync('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, plistPath], {
+      encoding: 'utf8',
+      timeout: 4000
+    }).trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+/** Apps in /Applications, ~/Applications, /System/Applications for dropdown (process name + display label). */
+function listMacInstalledApps() {
+  const dirs = ['/Applications', path.join(os.homedir(), 'Applications'), '/System/Applications'];
+  const byProcess = new Map();
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      continue;
+    }
+    for (const ent of entries) {
+      if (!ent.isDirectory() || !ent.name.endsWith('.app')) continue;
+      const appPath = path.join(dir, ent.name);
+      const plistPath = path.join(appPath, 'Contents', 'Info.plist');
+      if (!fs.existsSync(plistPath)) continue;
+      let executable = readMacPlistBuddy(plistPath, 'CFBundleExecutable');
+      let displayName =
+        readMacPlistBuddy(plistPath, 'CFBundleDisplayName') || readMacPlistBuddy(plistPath, 'CFBundleName');
+      if (!executable) executable = path.basename(appPath, '.app');
+      if (!displayName) displayName = path.basename(appPath, '.app');
+      const processName = executable.toLowerCase().trim();
+      if (!processName) continue;
+      if (processName === '0per8r' || ent.name.toLowerCase().includes('0per8r')) continue;
+      const label = displayName.trim();
+      if (!byProcess.has(processName)) {
+        byProcess.set(processName, { process: processName, label, path: appPath });
+      }
+    }
+  }
+  return Array.from(byProcess.values()).sort((a, b) =>
+    a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+  );
+}
+
+function listWinInstalledApps() {
+  const out = [];
+  const seen = new Set();
+  const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean);
+  for (const root of roots) {
+    if (!root || !fs.existsSync(root)) continue;
+    try {
+      const top = fs.readdirSync(root, { withFileTypes: true });
+      for (const ent of top) {
+        if (ent.isFile() && ent.name.toLowerCase().endsWith('.exe')) {
+          const base = path.basename(ent.name, path.extname(ent.name));
+          const proc = base.toLowerCase();
+          if (!seen.has(proc)) {
+            seen.add(proc);
+            out.push({ process: proc, label: base, path: path.join(root, ent.name) });
+          }
+        } else if (ent.isDirectory()) {
+          const sub = path.join(root, ent.name);
+          try {
+            const subFiles = fs.readdirSync(sub, { withFileTypes: true });
+            for (const f of subFiles) {
+              if (f.isFile() && f.name.toLowerCase().endsWith('.exe')) {
+                const base = path.basename(f.name, path.extname(f.name));
+                const proc = base.toLowerCase();
+                if (!seen.has(proc)) {
+                  seen.add(proc);
+                  out.push({ process: proc, label: base, path: path.join(sub, f.name) });
+                }
+              }
+            }
+          } catch (e) {
+            /* ignore */
+          }
+        }
+      }
+    } catch (e) {
+      /* ignore */
+    }
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+}
+
 function registerIpcHandlers() {
   ipcMain.handle('get-running-apps', async () => getRunningApps());
   ipcMain.handle('open-uninstaller', async () => {
@@ -3661,6 +3993,20 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('get-logs', async () => logHistory);
   ipcMain.handle('get-log-path', async () => path.join(initializeAppDataPath(), 'app.log'));
+  ipcMain.handle('list-installed-apps', async () => {
+    try {
+      if (process.platform === 'darwin') {
+        return { ok: true, apps: listMacInstalledApps() };
+      }
+      if (process.platform === 'win32') {
+        return { ok: true, apps: listWinInstalledApps() };
+      }
+      return { ok: true, apps: [] };
+    } catch (e) {
+      safeError('list-installed-apps:', e);
+      return { ok: false, error: e.message, apps: [] };
+    }
+  });
   ipcMain.handle('start-session', async (_event, payload) => {
     try {
       safeLog('start-session called with payload:', payload);
@@ -3707,8 +4053,8 @@ function registerIpcHandlers() {
       return { ok: false, error: error.message };
     }
   });
+  // Renderer syncs window chrome only — do NOT assign isLocked here (was able to clear the lock and unblock everything).
   ipcMain.on('set-locked', (event, locked) => {
-    isLocked = locked;
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.setClosable(!locked);
       mainWindow.setMinimizable(!locked);
@@ -3723,6 +4069,16 @@ function registerIpcHandlers() {
       return { success: true, updateInfo: result?.updateInfo };
     } catch (error) {
       safeError('Error checking for updates:', error);
+      return { success: false, error: error.message };
+    }
+  });
+  ipcMain.handle('download-update', async () => {
+    if (!autoUpdater) return { success: false, error: 'Auto-updater not loaded' };
+    try {
+      await autoUpdater.downloadUpdate();
+      return { success: true };
+    } catch (error) {
+      safeError('Error downloading update:', error);
       return { success: false, error: error.message };
     }
   });
@@ -3759,11 +4115,49 @@ app.whenReady().then(() => {
 });
 
 /**
- * If macOS still has 0per8r blocking proxy enabled but the app was force quit, offer one-click restore.
+ * If system proxy still points at 0per8r’s local proxy after crash/uninstall, offer reset.
+ * macOS: networksetup. Windows: WinHTTP (netsh winhttp).
  */
 function promptRestoreIfStaleSystemProxy() {
-  if (process.platform !== 'darwin') return;
   if (isLocked) return;
+
+  if (process.platform === 'win32') {
+    exec('netsh winhttp show proxy', (err, stdout, stderr) => {
+      if (err) return;
+      const t = ((stdout || '') + (stderr || '')).toString();
+      const lower = t.toLowerCase();
+      if (lower.includes('direct access') && !lower.includes('127.0.0.1')) return;
+      const stale =
+        lower.includes('127.0.0.1') ||
+        (lower.includes('3128') && (lower.includes('proxy') || lower.includes('server'))) ||
+        (lower.includes('proxy.pac') && lower.includes('127.0.0.1')) ||
+        (lower.includes('8888') && lower.includes('proxy'));
+      if (!stale) return;
+      safeLog('⚠️ Stale WinHTTP proxy detected (0per8r). Offering reset.');
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      dialog
+        .showMessageBox(mainWindow, {
+          type: 'warning',
+          title: 'Network still in blocking mode',
+          message:
+            'Windows is still using 0per8r’s proxy (127.0.0.1). Browsers may show errors until it is cleared.',
+          detail:
+            'Click “Reset now” (you may see a permission prompt). If you already removed the app, run RESTORE_WINDOWS_PROXY.bat from the install folder as Administrator, or: netsh winhttp reset proxy',
+          buttons: ['Reset now', 'Later'],
+          defaultId: 0,
+          cancelId: 1
+        })
+        .then(({ response }) => {
+          if (response === 0) {
+            restoreWindowsBlockingPromise().catch((e) => safeError('Stale WinHTTP restore:', e));
+          }
+        })
+        .catch(() => {});
+    });
+    return;
+  }
+
+  if (process.platform !== 'darwin') return;
 
   exec('networksetup -listallnetworkservices', (err, stdout) => {
     if (err) return;
@@ -3842,9 +4236,13 @@ function initializeAutoUpdater() {
     safeError('Failed to load auto-updater:', e);
     return;
   }
-  // Re-enabled for v1.2.8 - ensure latest-mac.yml / latest.yml are uploaded to GitHub releases
-  autoUpdater.autoDownload = true;
+  // macOS: auto-download update in background. Windows: do NOT auto-download — avoids a large pending
+  // installer under userData that feels like a separate “stuck” program; user taps Download & Install instead.
+  autoUpdater.autoDownload = process.platform !== 'win32';
   autoUpdater.autoInstallOnAppQuit = true;
+  if (process.platform === 'win32') {
+    safeLog('Windows: update auto-download off — use Download & Install when notified (no silent installer download).');
+  }
   
   // Update events
   autoUpdater.on('checking-for-update', () => {

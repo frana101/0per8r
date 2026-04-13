@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   // Auto-updater API
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  downloadUpdate: () => ipcRenderer.invoke('download-update'),
   quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
   restartAndInstall: () => ipcRenderer.send('restart-and-install'),
   onUpdateStatus: (callback) => {
@@ -46,5 +47,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   // Windows uninstaller
   openUninstaller: () => ipcRenderer.invoke('open-uninstaller'),
-  getPlatform: () => process.platform
+  getPlatform: () => process.platform,
+  listInstalledApps: () => ipcRenderer.invoke('list-installed-apps')
 });

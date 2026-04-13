@@ -1,6 +1,6 @@
 {
   "name": "0per8r",
-  "version": "1.4.5",
+  "version": "1.4.9",
   "description": "0per8r - Execution Lock System",
   "main": "main.js",
   "scripts": {
@@ -66,6 +66,12 @@
     },
     "win": {
       "icon": "build/icon.ico",
+      "extraResources": [
+        {
+          "from": "RESTORE_WINDOWS_PROXY.bat",
+          "to": "RESTORE_WINDOWS_PROXY.bat"
+        }
+      ],
       "target": [
         {
           "target": "nsis",
@@ -82,7 +88,9 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": true,
+      "include": "build/installer.nsh"
     }
   }
 }

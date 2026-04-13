@@ -118,11 +118,13 @@
             <div id="google-note" class="env-note">google.com is always allowed. All other websites will be blocked.</div>
             
             <label class="env-label" style="margin-top: 16px;">Allowed Apps</label>
-            <div class="tag-input-container">
-              <input type="text" id="allow-apps-input" class="tag-input" placeholder="e.g., VS Code (Enter)" />
+            <div class="tag-input-container allow-apps-picker">
+              <select id="allow-apps-select" class="tag-input allow-apps-select" aria-label="Add allowed app">
+                <option value="">Add an app…</option>
+              </select>
               <div id="allow-apps-tags" class="tag-list"></div>
             </div>
-            <div class="env-note">All other apps will be blocked</div>
+            <div class="env-note">All other apps will be blocked.</div>
           </div>
         </div>
 

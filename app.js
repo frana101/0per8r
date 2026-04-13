@@ -29,6 +29,43 @@ const state = {
 /** Prevents double-invoke when timer hits 0 */
 let sessionCompletionInProgress = false;
 
+function formatAppDisplayName(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  return s
+    .split(/[\s\-_.]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function normalizeAllowAppEntry(entry) {
+  if (entry && typeof entry === 'object' && entry.process) {
+    const proc = String(entry.process).toLowerCase().trim();
+    const label = (entry.label && String(entry.label).trim()) || formatAppDisplayName(entry.process);
+    return { process: proc, label };
+  }
+  const s = String(entry || '').trim();
+  if (!s) return null;
+  return { process: s.toLowerCase(), label: formatAppDisplayName(s) };
+}
+
+function normalizeAllowAppsArray(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr.map(normalizeAllowAppEntry).filter(Boolean);
+}
+
+function getAllowAppProcessKey(entry) {
+  if (entry && typeof entry === 'object' && entry.process) return String(entry.process).toLowerCase().trim();
+  return String(entry || '').toLowerCase().trim();
+}
+
+function getAllowAppDisplay(entry) {
+  if (entry && typeof entry === 'object' && entry.label) return String(entry.label);
+  if (entry && typeof entry === 'object' && entry.process) return formatAppDisplayName(entry.process);
+  return formatAppDisplayName(String(entry || ''));
+}
+
 // Audio system - Using HTML5 Audio instead of Web Audio API to avoid crashes
 const audioElements = {}; // Store HTML5 Audio elements
 
@@ -202,10 +239,10 @@ async function loadState() {
           state.mission = prefs.mission !== undefined ? prefs.mission : '';
           state.goal = prefs.goal !== undefined ? prefs.goal : '';
           state.task = prefs.task !== undefined ? prefs.task : '';
-          state.allowSites = Array.isArray(prefs.allowSites) ? prefs.allowSites : [];
-          state.allowApps = Array.isArray(prefs.allowApps) ? prefs.allowApps : [];
-          state.googleAlwaysAllowed = prefs.googleAlwaysAllowed !== undefined ? prefs.googleAlwaysAllowed : true;
-          if (prefs.soundscape && typeof prefs.soundscape === 'object') {
+  state.allowSites = Array.isArray(prefs.allowSites) ? prefs.allowSites : [];
+  state.allowApps = normalizeAllowAppsArray(Array.isArray(prefs.allowApps) ? prefs.allowApps : []);
+  state.googleAlwaysAllowed = prefs.googleAlwaysAllowed !== undefined ? prefs.googleAlwaysAllowed : true;
+  if (prefs.soundscape && typeof prefs.soundscape === 'object') {
             state.soundscape = { ...state.soundscape, ...prefs.soundscape };
           }
           state.soundscapeEnabled = prefs.soundscapeEnabled !== undefined ? prefs.soundscapeEnabled : true;
@@ -258,6 +295,7 @@ function loadStateFromLocal() {
 }
 
 function applyLoadedState() {
+  state.allowApps = normalizeAllowAppsArray(state.allowApps);
   // Ensure soundscape has all keys
   const allowedSounds = ['rain', 'ocean', 'fire', 'wind', 'forest', 'cafe', 'cityscape'];
   allowedSounds.forEach(s => { if (state.soundscape[s] === undefined) state.soundscape[s] = 0; });
@@ -331,13 +369,12 @@ function updateUI() {
     renderTags('allow-sites-tags', state.allowSites, removeSiteTag);
     
     const removeAppTag = (app) => {
-      // Remove case-insensitively
-      state.allowApps = state.allowApps.filter(a => a.toLowerCase() !== app.toLowerCase());
+      const key = getAllowAppProcessKey(app);
+      state.allowApps = state.allowApps.filter((a) => getAllowAppProcessKey(a) !== key);
       saveState();
-      // Immediately re-render tags to update UI
-      renderTags('allow-apps-tags', state.allowApps, removeAppTag);
+      renderAppTags('allow-apps-tags', state.allowApps, removeAppTag);
     };
-    renderTags('allow-apps-tags', state.allowApps, removeAppTag);
+    renderAppTags('allow-apps-tags', state.allowApps, removeAppTag);
     
     // Google always allowed toggle
     const googleToggle = document.getElementById('google-always-allowed-toggle');
@@ -393,6 +430,8 @@ function updateUI() {
       toggleBtn2.style.color = '#fff';
       console.log('Updated soundscape toggle 2:', isEnabled ? 'ON' : 'OFF');
     }
+
+    populateAllowAppsDropdown().catch(() => {});
   } catch (e) {
     console.error('Error in updateUI:', e);
   }
@@ -545,6 +584,47 @@ function renderTags(containerId, tags, onRemove) {
     div.querySelector('.tag-remove').onclick = () => onRemove(tag);
     container.appendChild(div);
   });
+}
+
+function renderAppTags(containerId, tags, onRemove) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = '';
+  tags.forEach((tag) => {
+    const div = document.createElement('div');
+    div.className = 'tag';
+    const span = document.createElement('span');
+    span.textContent = getAllowAppDisplay(tag);
+    const btn = document.createElement('button');
+    btn.className = 'tag-remove';
+    btn.type = 'button';
+    btn.setAttribute('aria-label', 'Remove');
+    btn.textContent = '×';
+    btn.onclick = () => onRemove(tag);
+    div.appendChild(span);
+    div.appendChild(btn);
+    container.appendChild(div);
+  });
+}
+
+async function populateAllowAppsDropdown() {
+  const sel = document.getElementById('allow-apps-select');
+  if (!sel || !window.electronAPI || typeof window.electronAPI.listInstalledApps !== 'function') return;
+  if (sel.dataset.populated === '1') return;
+  try {
+    const res = await window.electronAPI.listInstalledApps();
+    if (!res || !res.ok || !Array.isArray(res.apps)) return;
+    sel.innerHTML = '<option value="">Add an app…</option>';
+    res.apps.forEach((a) => {
+      const opt = document.createElement('option');
+      opt.value = JSON.stringify({ process: a.process, label: a.label || a.process });
+      opt.textContent = a.label || a.process;
+      sel.appendChild(opt);
+    });
+    sel.dataset.populated = '1';
+  } catch (e) {
+    console.warn('populateAllowAppsDropdown:', e);
+  }
 }
 
 // Update MIT select (simplified - just shows the current task)
@@ -799,37 +879,27 @@ function initializeEventListeners() {
     }
   });
   
-  // Tags - Apps (case-insensitive, no strict validation - allow any app name)
-  document.getElementById('allow-apps-input').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter' && e.target.value.trim()) {
-      const input = e.target;
-      const value = input.value.trim();
-      
-      // Basic validation: must not be empty and should be reasonable length
-      if (value.length === 0 || value.length > 100) {
-        input.value = '';
-        input.placeholder = 'Invalid app name...';
-        input.style.borderColor = '#f00';
-        setTimeout(() => {
-          input.placeholder = 'e.g., VS Code (Enter)';
-          input.style.borderColor = '';
-        }, 2000);
-        return;
+  const allowAppsSelect = document.getElementById('allow-apps-select');
+  if (allowAppsSelect) {
+    allowAppsSelect.addEventListener('change', () => {
+      const raw = allowAppsSelect.value;
+      if (!raw) return;
+      try {
+        const entry = JSON.parse(raw);
+        const proc = String(entry.process || '').toLowerCase().trim();
+        const label = String(entry.label || '').trim() || formatAppDisplayName(proc);
+        if (!proc) return;
+        if (!state.allowApps.some((a) => getAllowAppProcessKey(a) === proc)) {
+          state.allowApps.push({ process: proc, label });
+          saveState();
+          updateUI();
+        }
+      } catch (e) {
+        console.warn('allow-apps-select:', e);
       }
-      
-      // Check if already exists (case-insensitive)
-      const valueLower = value.toLowerCase();
-      if (!state.allowApps.some(a => a.toLowerCase() === valueLower)) {
-        // Store with original case for display, but compare case-insensitively
-        state.allowApps.push(value);
-        input.value = '';
-        saveState();
-        updateUI();
-      } else {
-        input.value = '';
-      }
-    }
-  });
+      allowAppsSelect.value = '';
+    });
+  }
   
   // Google always allowed toggle
   const googleToggle = document.getElementById('google-always-allowed-toggle');
@@ -1029,10 +1099,10 @@ function renderSessionAllowed() {
   // Render allowed apps
   appsContainer.innerHTML = '';
   if (state.allowApps && state.allowApps.length > 0) {
-    state.allowApps.forEach(app => {
+    state.allowApps.forEach((app) => {
       const item = document.createElement('div');
       item.className = 'allowed-item';
-      item.textContent = app;
+      item.textContent = getAllowAppDisplay(app);
       appsContainer.appendChild(item);
     });
   } else {
@@ -1118,12 +1188,12 @@ async function startSession() {
   if (window.electronAPI) {
     try {
       console.log('Starting Electron session with:', {
-        allowApps: state.allowApps || [],
+        allowApps: (state.allowApps || []).map((a) => getAllowAppProcessKey(a)),
         allowSites: state.allowSites || []
       });
       
       const result = await window.electronAPI.startSession({
-        allowApps: state.allowApps || [],
+        allowApps: (state.allowApps || []).map((a) => getAllowAppProcessKey(a)),
         allowSites: state.allowSites || [],
         googleAlwaysAllowed: state.googleAlwaysAllowed !== false
       });
@@ -1225,11 +1295,14 @@ function showPasswordPrompt(message, attempts = 1) {
       return;
     }
     
-    let attemptCount = 0;
+    // `attempts` = how many times the user must enter the correct password in a row (e.g. 3 for emergency exit).
+    let successCount = 0;
     const maxAttempts = attempts || 1;
     const initialMessage = message || 'Please enter your password to continue.';
-    
-    messageEl.textContent = maxAttempts > 1 ? `${initialMessage}\n\nEnter your ACCOUNT password (Attempt 1 of ${maxAttempts}):` : initialMessage;
+    messageEl.textContent =
+      maxAttempts > 1
+        ? `${initialMessage}\n\nEnter your ACCOUNT password (Attempt 1 of ${maxAttempts}):`
+        : initialMessage;
     input.value = '';
     modal.classList.add('password-modal--open');
     modal.setAttribute('aria-hidden', 'false');
@@ -1248,6 +1321,15 @@ function showPasswordPrompt(message, attempts = 1) {
       confirmBtn.onclick = null;
       cancelBtn.onclick = null;
       input.onkeydown = null;
+    };
+
+    const offlineNetworkHint = () => {
+      const isWin =
+        typeof window.electronAPI?.getPlatform === 'function' &&
+        window.electronAPI.getPlatform() === 'win32';
+      return isWin
+        ? 'If blocking broke your network: run RESTORE_WINDOWS_PROXY.bat from the install folder (as Administrator if needed), or in an elevated Command Prompt run: netsh winhttp reset proxy'
+        : 'If blocking broke your network, run CLEAR_MACOS_NETWORK.command or fix_network_proxy_gui.js from the app folder.';
     };
     
     const handleConfirm = async () => {
@@ -1282,8 +1364,7 @@ function showPasswordPrompt(message, attempts = 1) {
             passwordOk = true;
             mergePasswordHashIntoUser(currentUser, (userData && userData.email) || '', password);
           } else if (res.status === 401) {
-            const currentAttempt = attemptCount + 1;
-            alert(`Incorrect ACCOUNT password. Please try again. (Attempt ${currentAttempt} of ${maxAttempts})`);
+            alert('Incorrect ACCOUNT password. Please try again.');
             input.value = '';
             input.focus();
             return;
@@ -1301,7 +1382,7 @@ function showPasswordPrompt(message, attempts = 1) {
             passwordOk = true;
           } else {
             alert(
-              'Could not reach the server to verify your password. If blocking broke your network, run CLEAR_MACOS_NETWORK.command or fix_network_proxy_gui.js from the app folder. After you log in once while online, your password is saved locally for offline exit.'
+              `Could not reach the server to verify your password. ${offlineNetworkHint()} After you log in once while online, your password is saved locally for offline exit.`
             );
             input.value = '';
             input.focus();
@@ -1311,19 +1392,18 @@ function showPasswordPrompt(message, attempts = 1) {
       }
       
       if (passwordOk) {
-        attemptCount++;
-        if (attemptCount >= maxAttempts) {
+        successCount++;
+        if (successCount >= maxAttempts) {
           cleanup();
           resolve(true);
         } else {
-          const remaining = maxAttempts - attemptCount;
-          messageEl.textContent = `${initialMessage}\n\nAttempt ${attemptCount} of ${maxAttempts} successful. Enter your ACCOUNT password ${remaining} more time${remaining > 1 ? 's' : ''} (Attempt ${attemptCount + 1} of ${maxAttempts}):`;
+          const remaining = maxAttempts - successCount;
+          messageEl.textContent = `${initialMessage}\n\nAttempt ${successCount} of ${maxAttempts} successful. Enter your ACCOUNT password ${remaining} more time${remaining > 1 ? 's' : ''} (Attempt ${successCount + 1} of ${maxAttempts}):`;
           input.value = '';
           input.focus();
         }
       } else {
-        const currentAttempt = attemptCount + 1;
-        alert(`Incorrect ACCOUNT password. Please try again. (Attempt ${currentAttempt} of ${maxAttempts})`);
+        alert('Incorrect ACCOUNT password. Please try again.');
         input.value = '';
         input.focus();
       }
@@ -1374,7 +1454,7 @@ async function handleEmergencyExit() {
       return; // User cancelled
     }
     
-    // Show password prompt (3 attempts required)
+    // Require 3 correct password entries in a row (same as intentional design)
     const passwordCorrect = await showPasswordPrompt('Enter your ACCOUNT password to exit The Execution Chamber.', 3);
     
     if (!passwordCorrect) {
@@ -1394,10 +1474,10 @@ async function handleEmergencyExit() {
       }
     });
     
-    // Stop session - don't await, do it in parallel
+    // Stop session: await so main process starts restore (proxy / WinHTTP) before leaving session UI
     if (window.electronAPI) {
       try {
-        window.electronAPI.stopSession().catch(e => console.error('Stop session error:', e));
+        await window.electronAPI.stopSession();
         window.electronAPI.setLocked(false);
         window.electronAPI.exitFullscreen();
       } catch (e) {
@@ -1705,7 +1785,7 @@ function applyPreferencesToState(prefs) {
   state.goal = prefs.goal !== undefined ? prefs.goal : '';
   state.task = prefs.task !== undefined ? prefs.task : '';
   state.allowSites = Array.isArray(prefs.allowSites) ? prefs.allowSites : [];
-  state.allowApps = Array.isArray(prefs.allowApps) ? prefs.allowApps : [];
+  state.allowApps = normalizeAllowAppsArray(Array.isArray(prefs.allowApps) ? prefs.allowApps : []);
   state.googleAlwaysAllowed = prefs.googleAlwaysAllowed !== undefined ? prefs.googleAlwaysAllowed : true;
   if (prefs.soundscape && typeof prefs.soundscape === 'object') {
     state.soundscape = { ...state.soundscape, ...prefs.soundscape };
@@ -2363,8 +2443,17 @@ function updateDownloadProgress(data) {
 }
 
 // Global functions for update buttons
-window.installUpdate = function() {
-  if (window.electronAPI && window.electronAPI.checkForUpdates) {
+window.installUpdate = async function() {
+  if (!window.electronAPI) return;
+  try {
+    if (typeof window.electronAPI.downloadUpdate === 'function') {
+      const r = await window.electronAPI.downloadUpdate();
+      if (r && r.success) return;
+    }
+  } catch (e) {
+    console.warn('downloadUpdate:', e);
+  }
+  if (typeof window.electronAPI.checkForUpdates === 'function') {
     window.electronAPI.checkForUpdates();
   }
 };
