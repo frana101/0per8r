@@ -182,6 +182,26 @@ body {
   margin-top: auto;
 }
 
+.session-streak-display--top {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
+  width: 100%;
+}
+
+.streak-box {
+  flex: 0 0 auto;
+  min-height: 0;
+  height: auto;
+}
+
+.streak-box-inner {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 4px 8px 12px;
+}
+
 .session-streak-label {
   font-size: 9px;
   text-transform: uppercase;
@@ -225,6 +245,10 @@ body {
 .restrictions-box,
 .soundscapes-box {
   height: 100%;
+}
+
+.middle-column .streak-box {
+  flex: 0 0 auto;
 }
 
 .task-box,

@@ -118,6 +118,10 @@
             <div id="google-note" class="env-note">google.com is always allowed. All other websites will be blocked.</div>
             
             <label class="env-label" style="margin-top: 16px;">Allowed Apps</label>
+            <div style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+              <input type="checkbox" id="allow-browsers-always-toggle" style="cursor: pointer;" />
+              <label for="allow-browsers-always-toggle" style="font-size: 11px; color: #aaa; cursor: pointer; user-select: none;">Always allow browsers</label>
+            </div>
             <div class="tag-input-container allow-apps-picker">
               <select id="allow-apps-select" class="tag-input allow-apps-select" aria-label="Add allowed app">
                 <option value="">Add an app…</option>
@@ -128,8 +132,16 @@
           </div>
         </div>
 
-        <!-- Column 2: THE TASK and Start Focus Session -->
+        <!-- Column 2: Streak, THE TASK, Start Focus Session -->
         <div class="middle-column">
+          <div class="bento-box streak-box">
+            <div class="box-content streak-box-inner">
+              <div class="session-streak-display session-streak-display--top">
+                <span class="session-streak-label">Execution Streak</span>
+                <span id="streak-count" class="session-streak-value">0</span>
+              </div>
+            </div>
+          </div>
           <!-- THE TASK Box -->
           <div class="bento-box task-box">
             <div class="box-header">
@@ -176,11 +188,6 @@
                 </div>
                 
                 <button id="start-session" class="session-start-btn"><span>Enter the Execution Chamber</span></button>
-                
-                <div class="session-streak-display">
-                  <span class="session-streak-label">Execution Streak</span>
-                  <span id="streak-count" class="session-streak-value">0</span>
-                </div>
               </div>
             </div>
           </div>

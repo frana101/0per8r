@@ -9,7 +9,7 @@ const sudo =
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const { exec, execFileSync } = require('child_process');
+const { exec, execFileSync, execSync } = require('child_process');
 const httpProxy = require('http-proxy');
 const net = require('net');
 const os = require('os');
@@ -926,6 +926,48 @@ async function checkAccessibilityPermission() {
 
 let blockCount = 0;
 
+/** Process names (lowercase) treated as “browsers” when allowBrowsersAlways is on — matches foreground names on each OS. */
+function getBrowserProcessNamesForPlatform() {
+  if (process.platform === 'win32') {
+    return [
+      'chrome',
+      'msedge',
+      'brave',
+      'firefox',
+      'opera',
+      'vivaldi',
+      'iexplore',
+      'waterfox',
+      'librewolf',
+      'chromium',
+      'tor browser',
+      'opera gx',
+      'arc'
+    ];
+  }
+  return [
+    'safari',
+    'google chrome',
+    'chrome',
+    'firefox',
+    'brave browser',
+    'brave',
+    'microsoft edge',
+    'msedge',
+    'edge',
+    'arc',
+    'opera',
+    'opera gx',
+    'vivaldi',
+    'chromium',
+    'tor browser',
+    'orion',
+    'waterfox',
+    'librewolf',
+    'webkit'
+  ];
+}
+
 // Monitor active app - EXACT SAME LOGIC AS LOCAL
 async function monitorActiveApp() {
   if (!isLocked) return;
@@ -1050,18 +1092,31 @@ async function monitorActiveApp() {
   }
 }
 
-async function startMonitoring(apps, sites, allowGoogle = true) {
+async function startMonitoring(apps, sites, allowGoogle = true, allowBrowsersAlways = false) {
   // Session lock is owned only by main (start/stop-session). Never clear this from renderer IPC.
   isLocked = true;
   monitoringPaused = false;
 
-  allowedApps = (apps || [])
+  const userApps = (apps || [])
     .map((a) => {
       if (typeof a === 'string') return a.toLowerCase().trim();
       if (a && typeof a === 'object' && a.process) return String(a.process).toLowerCase().trim();
       return '';
     })
     .filter(Boolean);
+
+  const merged = [...userApps];
+  if (allowBrowsersAlways) {
+    const seen = new Set(merged);
+    for (const b of getBrowserProcessNamesForPlatform()) {
+      if (!seen.has(b)) {
+        seen.add(b);
+        merged.push(b);
+      }
+    }
+    safeLog('Always-allow browsers: merged process names:', getBrowserProcessNamesForPlatform().length);
+  }
+  allowedApps = merged;
   allowedSites = sites || [];
   googleAlwaysAllowed = allowGoogle !== false; // Default to true
 
@@ -3931,39 +3986,40 @@ function listMacInstalledApps() {
   );
 }
 
-function listWinInstalledApps() {
+/** Shallow Program Files scan — only used if registry listing fails. Skips obvious system folders. */
+function listWinInstalledAppsFromFoldersFallback() {
   const out = [];
   const seen = new Set();
-  const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean);
+  const roots = [
+    process.env.ProgramFiles,
+    process.env['ProgramFiles(x86)'],
+    path.join(os.homedir(), 'AppData', 'Local', 'Programs')
+  ].filter(Boolean);
+  const skipDir = /^(Windows Defender|WindowsApps|Windows NT|Internet Explorer|ModifiableWindowsApps)$/i;
+  const skipExe = /^(MpCmdRun|MpSigStub|SecurityHealth|MsMpEng|unins\d*|setup|install|crash|update|helper|webview)/i;
   for (const root of roots) {
     if (!root || !fs.existsSync(root)) continue;
     try {
       const top = fs.readdirSync(root, { withFileTypes: true });
       for (const ent of top) {
-        if (ent.isFile() && ent.name.toLowerCase().endsWith('.exe')) {
-          const base = path.basename(ent.name, path.extname(ent.name));
-          const proc = base.toLowerCase();
-          if (!seen.has(proc)) {
-            seen.add(proc);
-            out.push({ process: proc, label: base, path: path.join(root, ent.name) });
-          }
-        } else if (ent.isDirectory()) {
-          const sub = path.join(root, ent.name);
-          try {
-            const subFiles = fs.readdirSync(sub, { withFileTypes: true });
-            for (const f of subFiles) {
-              if (f.isFile() && f.name.toLowerCase().endsWith('.exe')) {
-                const base = path.basename(f.name, path.extname(f.name));
-                const proc = base.toLowerCase();
-                if (!seen.has(proc)) {
-                  seen.add(proc);
-                  out.push({ process: proc, label: base, path: path.join(sub, f.name) });
-                }
-              }
+        if (!ent.isDirectory()) continue;
+        if (skipDir.test(ent.name)) continue;
+        const sub = path.join(root, ent.name);
+        if (/Windows Defender|WindowsApps|System32|SysWOW64/i.test(sub)) continue;
+        try {
+          const subFiles = fs.readdirSync(sub, { withFileTypes: true });
+          for (const f of subFiles) {
+            if (!f.isFile() || !f.name.toLowerCase().endsWith('.exe')) continue;
+            const base = path.basename(f.name, path.extname(f.name));
+            if (skipExe.test(base)) continue;
+            const proc = base.toLowerCase();
+            if (!seen.has(proc)) {
+              seen.add(proc);
+              out.push({ process: proc, label: base, path: path.join(sub, f.name) });
             }
-          } catch (e) {
-            /* ignore */
           }
+        } catch (e) {
+          /* ignore */
         }
       }
     } catch (e) {
@@ -3971,6 +4027,86 @@ function listWinInstalledApps() {
     }
   }
   return out.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+}
+
+function listWinInstalledAppsFromRegistry() {
+  initializeAppDataPath();
+  const scriptPath = path.join(appDataPath, 'list_installed_apps_registry.ps1');
+  const script = `param()
+$ErrorActionPreference = 'SilentlyContinue'
+$results = New-Object System.Collections.ArrayList
+$roots = @(
+  'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+)
+foreach ($base in $roots) {
+  if (-not (Test-Path -LiteralPath $base)) { continue }
+  Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue | ForEach-Object {
+    $props = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+    if (-not $props.DisplayName) { return }
+    $dn = $props.DisplayName.Trim()
+    if ($dn -like 'Microsoft Visual C++*' -or $dn -like 'Microsoft .NET*' -or $dn -like 'Windows Update*' -or $dn -like 'Security Update for *' -or $dn -like 'Update for *') { return }
+    $exePath = $null
+    if ($props.DisplayIcon) {
+      $ico = ($props.DisplayIcon -replace ',\\d+\\s*$','').Trim('"')
+      if ($ico.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $ico)) { $exePath = $ico }
+    }
+    if (-not $exePath -and $props.InstallLocation) {
+      $dir = $props.InstallLocation.TrimEnd('\\')
+      if (Test-Path -LiteralPath $dir) {
+        $exes = @(Get-ChildItem -LiteralPath $dir -Filter *.exe -File -ErrorAction SilentlyContinue)
+        if ($exes.Count -eq 1) { $exePath = $exes[0].FullName }
+      }
+    }
+    if (-not $exePath -or -not (Test-Path -LiteralPath $exePath)) { return }
+    $parent = Split-Path -Parent $exePath
+    $dl = $parent.ToLowerInvariant()
+    if ($dl -notlike '*program files*' -and $dl -notlike '*appdata*local*programs*') { return }
+    if ($dl -like '*windows defender*' -or $dl -like '*\\windowsapps\\*' -or $dl -like '*\\system32\\*' -or $dl -like '*\\syswow64\\*') { return }
+    $baseExe = [System.IO.Path]::GetFileNameWithoutExtension($exePath)
+    $proc = $baseExe.ToLowerInvariant()
+    if ($proc -match '^(uninst|setup|msiexec|regsvr32|sdbinst|crash|update|helper|webview)') { return }
+    [void]$results.Add([PSCustomObject]@{ process = $proc; label = $dn; path = $exePath })
+  }
+}
+$uniq = @{}
+foreach ($r in $results) {
+  if (-not $uniq.ContainsKey($r.process)) { $uniq[$r.process] = $r }
+}
+@($uniq.Values | Sort-Object { $_.label }) | ConvertTo-Json -Compress -Depth 5
+`;
+  fs.writeFileSync(scriptPath, script, 'utf8');
+  const out = execSync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
+    encoding: 'utf8',
+    timeout: 60000,
+    windowsHide: true,
+    maxBuffer: 1024 * 1024 * 10
+  });
+  let text = out.trim().replace(/^\uFEFF/, '');
+  if (!text || text === 'null') return [];
+  const parsed = JSON.parse(text);
+  const arr = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+  return arr.map((a) => ({
+    process: String(a.process || '').toLowerCase().trim(),
+    label: String(a.label || a.process || '').trim(),
+    path: a.path ? String(a.path) : ''
+  })).filter((a) => a.process && a.label);
+}
+
+function listWinInstalledApps() {
+  try {
+    const apps = listWinInstalledAppsFromRegistry();
+    if (apps.length > 0) {
+      safeLog('Windows installed apps (registry):', apps.length);
+      return apps;
+    }
+  } catch (e) {
+    safeError('listWinInstalledApps registry failed:', e.message);
+  }
+  const fallback = listWinInstalledAppsFromFoldersFallback();
+  safeLog('Windows installed apps (folder fallback):', fallback.length);
+  return fallback;
 }
 
 function registerIpcHandlers() {
@@ -4010,8 +4146,13 @@ function registerIpcHandlers() {
   ipcMain.handle('start-session', async (_event, payload) => {
     try {
       safeLog('start-session called with payload:', payload);
-      const { allowApps, allowSites, googleAlwaysAllowed: allowGoogle } = payload || {};
-      await startMonitoring(allowApps || [], allowSites || [], allowGoogle !== false);
+      const { allowApps, allowSites, googleAlwaysAllowed: allowGoogle, allowBrowsersAlways } = payload || {};
+      await startMonitoring(
+        allowApps || [],
+        allowSites || [],
+        allowGoogle !== false,
+        allowBrowsersAlways === true
+      );
       safeLog('start-session completed successfully');
       return { ok: true };
     } catch (error) {

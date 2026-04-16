@@ -23,7 +23,9 @@ const state = {
   sessionStart: null,
   isLocked: false,
   isAuthenticated: false,
-  currentUser: null
+  currentUser: null,
+  /** When true, session allows all major browser process names (see main process). */
+  allowBrowsersAlways: false
 };
 
 /** Prevents double-invoke when timer hits 0 */
@@ -64,6 +66,56 @@ function getAllowAppDisplay(entry) {
   if (entry && typeof entry === 'object' && entry.label) return String(entry.label);
   if (entry && typeof entry === 'object' && entry.process) return formatAppDisplayName(entry.process);
   return formatAppDisplayName(String(entry || ''));
+}
+
+/** Only real hostnames (no IPs, localhost, junk). Used for allowed-website tags and persisted list cleanup. */
+function isValidAllowedWebsite(raw) {
+  try {
+    if (!raw || typeof raw !== 'string') return false;
+    let cleaned = raw.trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '');
+    cleaned = cleaned.split('/')[0].split('?')[0].split('#')[0].trim();
+    if (!cleaned || !cleaned.includes('.')) return false;
+    if (/\s/.test(cleaned)) return false;
+    if (!/^[a-zA-Z0-9.\-]+$/i.test(cleaned)) return false;
+    if (cleaned.startsWith('.') || cleaned.endsWith('.') || cleaned.includes('..')) return false;
+    const lower = cleaned.toLowerCase();
+    if (
+      lower === 'localhost' ||
+      lower.endsWith('.localhost') ||
+      lower === 'invalid' ||
+      lower.endsWith('.invalid') ||
+      lower === 'local' ||
+      lower.endsWith('.local') ||
+      lower === 'internal' ||
+      lower.endsWith('.internal')
+    ) {
+      return false;
+    }
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(cleaned)) return false;
+    const parts = cleaned.split('.');
+    if (parts.length < 2) return false;
+    const tld = parts[parts.length - 1];
+    if (tld.length < 2 || !/^[a-zA-Z]+$/.test(tld)) return false;
+    if (/^\d+$/.test(tld)) return false;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (!part || part.length > 63) return false;
+      if (part.startsWith('-') || part.endsWith('-')) return false;
+      if (!/^[a-zA-Z0-9-]+$/i.test(part)) return false;
+    }
+    let hostnameOk = false;
+    try {
+      const u = new URL('https://' + cleaned);
+      hostnameOk = u.hostname.toLowerCase() === lower;
+    } catch {
+      hostnameOk = false;
+    }
+    if (!hostnameOk) return false;
+    if (cleaned.length > 253) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Audio system - Using HTML5 Audio instead of Web Audio API to avoid crashes
@@ -239,10 +291,11 @@ async function loadState() {
           state.mission = prefs.mission !== undefined ? prefs.mission : '';
           state.goal = prefs.goal !== undefined ? prefs.goal : '';
           state.task = prefs.task !== undefined ? prefs.task : '';
-  state.allowSites = Array.isArray(prefs.allowSites) ? prefs.allowSites : [];
-  state.allowApps = normalizeAllowAppsArray(Array.isArray(prefs.allowApps) ? prefs.allowApps : []);
-  state.googleAlwaysAllowed = prefs.googleAlwaysAllowed !== undefined ? prefs.googleAlwaysAllowed : true;
-  if (prefs.soundscape && typeof prefs.soundscape === 'object') {
+          state.allowSites = Array.isArray(prefs.allowSites) ? prefs.allowSites : [];
+          state.allowApps = normalizeAllowAppsArray(Array.isArray(prefs.allowApps) ? prefs.allowApps : []);
+          state.googleAlwaysAllowed = prefs.googleAlwaysAllowed !== undefined ? prefs.googleAlwaysAllowed : true;
+          state.allowBrowsersAlways = prefs.allowBrowsersAlways === true;
+          if (prefs.soundscape && typeof prefs.soundscape === 'object') {
             state.soundscape = { ...state.soundscape, ...prefs.soundscape };
           }
           state.soundscapeEnabled = prefs.soundscapeEnabled !== undefined ? prefs.soundscapeEnabled : true;
@@ -284,6 +337,7 @@ function loadStateFromLocal() {
   state.allowSites = Array.isArray(saved.allowSites) ? saved.allowSites : [];
   state.allowApps = Array.isArray(saved.allowApps) ? saved.allowApps : [];
   state.googleAlwaysAllowed = saved.googleAlwaysAllowed !== undefined ? saved.googleAlwaysAllowed : true;
+  state.allowBrowsersAlways = saved.allowBrowsersAlways === true;
   const allowedSounds = ['rain', 'ocean', 'fire', 'wind', 'forest', 'cafe', 'cityscape'];
   if (saved.soundscape) {
     state.soundscape = {};
@@ -296,6 +350,8 @@ function loadStateFromLocal() {
 
 function applyLoadedState() {
   state.allowApps = normalizeAllowAppsArray(state.allowApps);
+  state.allowSites = (state.allowSites || []).filter((s) => isValidAllowedWebsite(String(s)));
+  if (typeof state.allowBrowsersAlways !== 'boolean') state.allowBrowsersAlways = false;
   // Ensure soundscape has all keys
   const allowedSounds = ['rain', 'ocean', 'fire', 'wind', 'forest', 'cafe', 'cityscape'];
   allowedSounds.forEach(s => { if (state.soundscape[s] === undefined) state.soundscape[s] = 0; });
@@ -312,6 +368,7 @@ function saveState() {
     allowSites: state.allowSites,
     allowApps: state.allowApps,
     googleAlwaysAllowed: state.googleAlwaysAllowed,
+    allowBrowsersAlways: state.allowBrowsersAlways === true,
     soundscape: state.soundscape,
     soundscapeEnabled: state.soundscapeEnabled,
     streak: state.streak
@@ -386,6 +443,11 @@ function updateUI() {
       googleNote.textContent = state.googleAlwaysAllowed 
         ? 'google.com is always allowed. All other websites will be blocked.' 
         : 'All websites except those listed above will be blocked.';
+    }
+    
+    const browsersToggle = document.getElementById('allow-browsers-always-toggle');
+    if (browsersToggle) {
+      browsersToggle.checked = state.allowBrowsersAlways === true;
     }
     
     // Streak
@@ -749,113 +811,14 @@ function initializeEventListeners() {
     });
   }
   
-  // Helper function to validate URL - very strict validation
-  function isValidUrl(url) {
-    try {
-      if (!url || typeof url !== 'string') {
-        return false;
-      }
-      
-      // Clean the URL - remove protocol and www
-      let cleaned = url.trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '');
-      
-      // Remove any trailing slashes or paths
-      cleaned = cleaned.split('/')[0].split('?')[0].split('#')[0];
-      
-      // Must not be empty after cleaning
-      if (!cleaned || cleaned.length === 0) {
-        return false;
-      }
-      
-      // Must have at least one dot
-      if (!cleaned.includes('.')) {
-        return false;
-      }
-      
-      // Must not contain spaces, tabs, or newlines
-      if (/\s/.test(cleaned)) {
-        return false;
-      }
-      
-      // Must not contain invalid characters (only alphanumeric, dots, hyphens allowed)
-      if (!/^[a-zA-Z0-9.\-]+$/.test(cleaned)) {
-        return false;
-      }
-      
-      // Must not start or end with dot or hyphen
-      if (cleaned.startsWith('.') || cleaned.endsWith('.') || 
-          cleaned.startsWith('-') || cleaned.endsWith('-')) {
-        return false;
-      }
-      
-      // Must not have consecutive dots
-      if (cleaned.includes('..')) {
-        return false;
-      }
-      
-      // Split into parts
-      const parts = cleaned.split('.');
-      if (parts.length < 2) {
-        return false;
-      }
-      
-      // TLD (last part) must be at least 2 characters and only letters
-      const tld = parts[parts.length - 1];
-      if (tld.length < 2 || !/^[a-zA-Z]{2,}$/.test(tld)) {
-        return false;
-      }
-      
-      // Each part must be valid
-      for (let i = 0; i < parts.length; i++) {
-        const part = parts[i];
-        
-        // Must not be empty
-        if (!part || part.length === 0) {
-          return false;
-        }
-        
-        // Must not start or end with hyphen
-        if (part.startsWith('-') || part.endsWith('-')) {
-          return false;
-        }
-        
-        // Must only contain alphanumeric and hyphens
-        if (!/^[a-zA-Z0-9-]+$/.test(part)) {
-          return false;
-        }
-        
-        // First part (domain name) must have at least one letter or number
-        if (i === 0 && !/[a-zA-Z0-9]/.test(part)) {
-          return false;
-        }
-      }
-      
-      // Must be a reasonable length (max 253 characters for full domain)
-      if (cleaned.length > 253) {
-        return false;
-      }
-      
-      // Each part must be max 63 characters (DNS limit)
-      for (let part of parts) {
-        if (part.length > 63) {
-          return false;
-        }
-      }
-      
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-  
   // Tags - Sites
   document.getElementById('allow-sites-input').addEventListener('keypress', async (e) => {
     if (e.key === 'Enter' && e.target.value.trim()) {
       const input = e.target;
       const value = input.value.trim().replace(/^https?:\/\//, '').replace(/^www\./, '');
       
-      // Validate URL
-      if (!isValidUrl(value)) {
+      // Validate hostname (real websites only — see isValidAllowedWebsite)
+      if (!isValidAllowedWebsite(value)) {
         input.value = '';
         input.placeholder = 'Invalid URL. Try again...';
         input.style.borderColor = '#f00';
@@ -906,6 +869,15 @@ function initializeEventListeners() {
   if (googleToggle) {
     googleToggle.addEventListener('change', (e) => {
       state.googleAlwaysAllowed = e.target.checked;
+      saveState();
+      updateUI();
+    });
+  }
+  
+  const browsersAlwaysToggle = document.getElementById('allow-browsers-always-toggle');
+  if (browsersAlwaysToggle) {
+    browsersAlwaysToggle.addEventListener('change', (e) => {
+      state.allowBrowsersAlways = e.target.checked;
       saveState();
       updateUI();
     });
@@ -1098,6 +1070,12 @@ function renderSessionAllowed() {
   
   // Render allowed apps
   appsContainer.innerHTML = '';
+  if (state.allowBrowsersAlways) {
+    const row = document.createElement('div');
+    row.className = 'allowed-item allowed-item--note';
+    row.textContent = 'All major browsers (automatic)';
+    appsContainer.appendChild(row);
+  }
   if (state.allowApps && state.allowApps.length > 0) {
     state.allowApps.forEach((app) => {
       const item = document.createElement('div');
@@ -1105,7 +1083,7 @@ function renderSessionAllowed() {
       item.textContent = getAllowAppDisplay(app);
       appsContainer.appendChild(item);
     });
-  } else {
+  } else if (!state.allowBrowsersAlways) {
     const empty = document.createElement('div');
     empty.className = 'allowed-empty';
     empty.textContent = 'No apps allowed';
@@ -1189,13 +1167,15 @@ async function startSession() {
     try {
       console.log('Starting Electron session with:', {
         allowApps: (state.allowApps || []).map((a) => getAllowAppProcessKey(a)),
-        allowSites: state.allowSites || []
+        allowSites: state.allowSites || [],
+        allowBrowsersAlways: state.allowBrowsersAlways === true
       });
       
       const result = await window.electronAPI.startSession({
         allowApps: (state.allowApps || []).map((a) => getAllowAppProcessKey(a)),
         allowSites: state.allowSites || [],
-        googleAlwaysAllowed: state.googleAlwaysAllowed !== false
+        googleAlwaysAllowed: state.googleAlwaysAllowed !== false,
+        allowBrowsersAlways: state.allowBrowsersAlways === true
       });
       
       console.log('Electron startSession result:', result);
@@ -1787,11 +1767,13 @@ function applyPreferencesToState(prefs) {
   state.allowSites = Array.isArray(prefs.allowSites) ? prefs.allowSites : [];
   state.allowApps = normalizeAllowAppsArray(Array.isArray(prefs.allowApps) ? prefs.allowApps : []);
   state.googleAlwaysAllowed = prefs.googleAlwaysAllowed !== undefined ? prefs.googleAlwaysAllowed : true;
+  state.allowBrowsersAlways = prefs.allowBrowsersAlways === true;
   if (prefs.soundscape && typeof prefs.soundscape === 'object') {
     state.soundscape = { ...state.soundscape, ...prefs.soundscape };
   }
   state.soundscapeEnabled = prefs.soundscapeEnabled !== undefined ? prefs.soundscapeEnabled : true;
   state.streak = prefs.streak !== undefined ? prefs.streak : 0;
+  applyLoadedState();
 }
 
 function clearSession() {
